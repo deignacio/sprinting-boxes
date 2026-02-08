@@ -1,9 +1,9 @@
 use crate::cli::Args;
-use crate::web::api::{create_run_handler, get_runs, get_videos};
+use crate::web::api::{create_run_handler, get_runs, get_videos, update_run_handler};
 use crate::web::assets::{index_handler, static_handler};
 use anyhow::Result;
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use std::net::{SocketAddr, TcpListener};
@@ -39,6 +39,7 @@ pub async fn run_server(args: Args) -> Result<()> {
         .route("/api/videos", get(get_videos))
         .route("/api/runs", get(get_runs))
         .route("/api/runs", post(create_run_handler))
+        .route("/api/runs/:id", put(update_run_handler))
         .route("/", get(index_handler))
         .route("/*path", get(static_handler))
         .with_state(shared_args);

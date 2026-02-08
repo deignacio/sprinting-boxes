@@ -1,15 +1,29 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Play, Send, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Play } from "lucide-react";
 
 const CreateRunPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const videoPath = searchParams.get("video") || "";
-  const videoName = videoPath.split("/").pop() || "Unknown Video";
+  const stem = videoPath.split("/").pop()?.replace(/\.[^/.]+$/, "") || "Unknown Video";
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!videoPath) {
+      setError("No video path provided");
+      setLoading(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      handleCreateRun();
+    }, 1500); // Small delay to show the "Initializing" state
+
+    return () => clearTimeout(timer);
+  }, [videoPath]);
 
   const handleCreateRun = async () => {
     setLoading(true);
@@ -22,7 +36,7 @@ const CreateRunPage: React.FC = () => {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to create run");
+        throw new Error("Failed to create run context");
       }
 
       const metadata = await response.json();
@@ -36,7 +50,7 @@ const CreateRunPage: React.FC = () => {
   return (
     <div className="container">
       <button
-        onClick={() => navigate(-1)}
+        onClick={() => navigate("/")}
         className="btn btn-secondary"
         style={{ marginBottom: "2rem" }}
       >
@@ -46,86 +60,51 @@ const CreateRunPage: React.FC = () => {
 
       <div
         className="glass-card"
-        style={{ maxWidth: "600px", margin: "0 auto" }}
+        style={{ maxWidth: "500px", margin: "4rem auto", textAlign: 'center', padding: '3rem 2rem' }}
       >
-        <div style={{ textAlign: "center", marginBottom: "2rem" }}>
-          <div
-            style={{
-              width: "64px",
-              height: "64px",
-              background: "rgba(59, 130, 246, 0.1)",
-              borderRadius: "50%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              margin: "0 auto 1.5rem",
-            }}
-          >
-            <Play size={32} color="var(--accent-secondary)" />
-          </div>
-          <h1>New Processing Run</h1>
-          <p style={{ color: "var(--text-secondary)", marginTop: "0.5rem" }}>
-            Initialize analysis for {videoName}
-          </p>
-        </div>
-
-        <div style={{ marginBottom: "2rem" }}>
-          <label
-            style={{
-              display: "block",
-              fontSize: "0.75rem",
-              fontWeight: 600,
-              color: "var(--text-muted)",
-              textTransform: "uppercase",
-              marginBottom: "0.5rem",
-            }}
-          >
-            Video Source
-          </label>
-          <div
-            style={{
-              padding: "1rem",
-              background: "var(--bg-tertiary)",
-              borderRadius: "0.5rem",
-              fontSize: "0.875rem",
-              wordBreak: "break-all",
-            }}
-          >
-            {videoPath}
-          </div>
-        </div>
-
-        {error && (
-          <div
-            style={{
-              padding: "1rem",
-              background: "rgba(239, 68, 68, 0.1)",
-              border: "1px solid rgba(239, 68, 68, 0.2)",
-              borderRadius: "0.5rem",
-              color: "#f87171",
-              marginBottom: "2rem",
-              fontSize: "0.875rem",
-            }}
-          >
-            {error}
-          </div>
-        )}
-
-        <button
-          onClick={handleCreateRun}
-          disabled={loading}
-          className="btn btn-primary"
-          style={{ width: "100%", justifyContent: "center", padding: "1rem" }}
+        <div
+          style={{
+            width: "80px",
+            height: "80px",
+            background: "rgba(59, 130, 246, 0.1)",
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            margin: "0 auto 2rem",
+          }}
         >
           {loading ? (
-            <Loader2 className="animate-spin" size={20} />
+            <Loader2 className="animate-spin" size={40} color="var(--accent-primary)" />
           ) : (
-            <>
-              <Send size={20} />
-              Initialize Run
-            </>
+            <Play size={40} color="var(--accent-secondary)" />
           )}
-        </button>
+        </div>
+
+        {loading ? (
+          <>
+            <h1>Initializing Analysis</h1>
+            <p style={{ color: "var(--text-secondary)", marginTop: "1rem" }}>
+              Creating workspace for <strong>{stem}</strong>...
+            </p>
+          </>
+        ) : error ? (
+          <>
+            <h1 style={{ color: '#f87171' }}>Initialization Failed</h1>
+            <p style={{ color: "var(--text-secondary)", marginTop: "1rem", marginBottom: '2rem' }}>
+              {error}
+            </p>
+            <button
+              onClick={handleCreateRun}
+              className="btn btn-primary"
+              style={{ margin: '0 auto' }}
+            >
+              Retry
+            </button>
+          </>
+        ) : (
+          <h1>Workspace Ready</h1>
+        )}
       </div>
     </div>
   );

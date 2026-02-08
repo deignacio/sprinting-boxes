@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Play, Folder, ChevronRight, Hash, Calendar } from "lucide-react";
+import { Play, Folder, ChevronRight, Calendar, Users } from "lucide-react";
 
 interface VideoInfo {
   name: string;
@@ -11,8 +11,13 @@ interface RunInfo {
   name: string;
   metadata: {
     original_name: string;
+    display_name: string;
     created_at: string;
     run_id: string;
+    team_size: number;
+    light_team_name: string;
+    dark_team_name: string;
+    tags: string[];
   };
 }
 
@@ -111,40 +116,52 @@ const ListPage: React.FC = () => {
                 >
                   <div className="glass-card list-item">
                     <div className="list-item-content">
-                      <h3>{run.metadata.run_id}</h3>
+                      <h3>{run.metadata.display_name}</h3>
                       <div
                         style={{
                           display: "flex",
-                          gap: "1rem",
-                          marginTop: "0.25rem",
+                          flexDirection: "column",
+                          gap: "0.5rem",
+                          marginTop: "0.5rem",
                         }}
                       >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "0.25rem",
-                            fontSize: "0.75rem",
-                            color: "var(--text-muted)",
-                          }}
-                        >
-                          <Calendar size={12} />
-                          {new Date(
-                            run.metadata.created_at,
-                          ).toLocaleDateString()}
+                        <div style={{ display: "flex", gap: "1rem" }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "0.25rem",
+                              fontSize: "0.75rem",
+                              color: "var(--text-muted)",
+                            }}
+                          >
+                            <Calendar size={12} />
+                            {new Date(
+                              run.metadata.created_at,
+                            ).toLocaleDateString()}
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "0.25rem",
+                              fontSize: "0.75rem",
+                              color: "var(--text-muted)",
+                            }}
+                          >
+                            <Users size={12} />
+                            Team: {run.metadata.team_size}
+                          </div>
                         </div>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "0.25rem",
-                            fontSize: "0.75rem",
-                            color: "var(--text-muted)",
-                          }}
-                        >
-                          <Hash size={12} />
-                          {run.metadata.original_name}
-                        </div>
+                        {run.metadata.tags.length > 0 && (
+                          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                            {run.metadata.tags.map(tag => (
+                              <span key={tag} className="badge" style={{ fontSize: '0.65rem', padding: '0.1rem 0.5rem', background: 'rgba(255,255,255,0.05)' }}>
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <ChevronRight size={20} color="var(--text-muted)" />
