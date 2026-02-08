@@ -1,10 +1,20 @@
+use crate::cli::Args;
+use crate::web::api::{create_run_handler, get_runs, get_videos};
 use crate::web::assets::{index_handler, static_handler};
 use anyhow::Result;
-use axum::{routing::get, Router};
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use axum::{
+    routing::{get, post},
+    Router,
+};
+use std::net::{SocketAddr, TcpListener};
+use std::sync::Arc;
 use tracing::{info, warn};
 
-pub async fn run_server(host: IpAddr, port: u16) -> Result<()> {
+pub async fn run_server(args: Args) -> Result<()> {
+    let host = args.host;
+    let port = args.port;
+    let shared_args = Arc::new(args);
+
     let mut current_port = port;
     let listener = loop {
         let addr = SocketAddr::new(host, current_port);
@@ -26,8 +36,12 @@ pub async fn run_server(host: IpAddr, port: u16) -> Result<()> {
     };
 
     let app = Router::new()
+        .route("/api/videos", get(get_videos))
+        .route("/api/runs", get(get_runs))
+        .route("/api/runs", post(create_run_handler))
         .route("/", get(index_handler))
-        .route("/*path", get(static_handler));
+        .route("/*path", get(static_handler))
+        .with_state(shared_args);
 
     let tokio_listener = tokio::net::TcpListener::from_std(listener)?;
     info!(

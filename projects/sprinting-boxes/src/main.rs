@@ -1,4 +1,5 @@
 mod cli;
+mod run_context;
 mod web;
 
 use anyhow::Result;
@@ -15,7 +16,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse_args();
 
-    run_server(args.host, args.port).await?;
+    run_server(args).await?;
 
     Ok(())
 }
