@@ -1,5 +1,6 @@
 mod cli;
 mod run_context;
+mod video;
 mod web;
 
 use anyhow::Result;

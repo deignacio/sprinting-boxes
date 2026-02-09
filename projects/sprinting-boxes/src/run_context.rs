@@ -42,6 +42,71 @@ impl VideoMetadata {
         fs::write(metadata_path, content)?;
         Ok(())
     }
+
+    /// Returns the directory where calibration frames are stored.
+    pub fn get_calibration_frames_dir(&self) -> PathBuf {
+        self.output_dir.join("calibration_frames")
+    }
+
+    /// Extracts calibration frames from the source video.
+    pub fn extract_calibration_frames(&self, video_root: &Path) -> Result<Vec<PathBuf>> {
+        // Defensive check: if original_name already contains the video_root, don't join it again.
+        // This handles existing "doubled" paths in metadata.json gracefully.
+        let video_path = if Path::new(&self.original_name).is_absolute() {
+            PathBuf::from(&self.original_name)
+        } else {
+            video_root.join(&self.original_name)
+        };
+
+        // Final safety: if the joined path doesn't exist but the relative part does exist inside video_root
+        // (handles the case where video_root might be different now)
+        let final_path = if !video_path.exists() {
+            let filename = Path::new(&self.original_name)
+                .file_name()
+                .unwrap_or_default();
+            video_root.join(filename)
+        } else {
+            video_path
+        };
+
+        let output_dir = self.get_calibration_frames_dir();
+
+        crate::video::calibration::extract_calibration_frames(
+            final_path.to_str().unwrap(),
+            "opencv", // Default backend
+            &output_dir,
+            400.0, // Start extraction at 400s
+            5,     // Extract 5 frames
+            1.0,   // 1 second interval
+        )
+    }
+
+    /// Validates that all dependencies needed for processing are present.
+    pub fn validate_process_run_dependencies(&self) -> Vec<RunDependency> {
+        let mut deps = Vec::new();
+
+        // Check for field_boundaries.json
+        let field_boundaries_path = self.output_dir.join("field_boundaries.json");
+        let field_boundaries_valid = field_boundaries_path.exists();
+        deps.push(RunDependency {
+            artifact_name: "field_boundaries.json".to_string(),
+            message: if field_boundaries_valid {
+                "Field boundaries defined.".to_string()
+            } else {
+                "Field boundaries must be defined before processing.".to_string()
+            },
+            valid: field_boundaries_valid,
+        });
+
+        deps
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RunDependency {
+    pub artifact_name: String,
+    pub message: String,
+    pub valid: bool,
 }
 
 /// Returns the full path to a specific artifact for a given run.
@@ -50,7 +115,7 @@ pub fn get_video_artifact_path(metadata: &VideoMetadata, artifact_name: &str) ->
     metadata.output_dir.join(artifact_name)
 }
 
-/// Lists all MP4 video files within the specified root directory.
+/// Lists all MP4 video files within the specified root directory, returning paths relative to video_root.
 pub fn list_videos(video_root: &Path) -> Vec<PathBuf> {
     WalkDir::new(video_root)
         .into_iter()
@@ -63,7 +128,12 @@ pub fn list_videos(video_root: &Path) -> Vec<PathBuf> {
                 .map(|s| s.to_lowercase() == "mp4")
                 .unwrap_or(false)
         })
-        .map(|e| e.path().to_path_buf())
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(video_root)
+                .ok()
+                .map(|p| p.to_path_buf())
+        })
         .collect()
 }
 

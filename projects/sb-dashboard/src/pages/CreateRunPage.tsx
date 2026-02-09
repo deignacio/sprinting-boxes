@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2, Play } from "lucide-react";
 
@@ -11,21 +11,7 @@ const CreateRunPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!videoPath) {
-      setError("No video path provided");
-      setLoading(false);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      handleCreateRun();
-    }, 1500); // Small delay to show the "Initializing" state
-
-    return () => clearTimeout(timer);
-  }, [videoPath]);
-
-  const handleCreateRun = async () => {
+  const handleCreateRun = React.useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -45,7 +31,21 @@ const CreateRunPage: React.FC = () => {
       setError(err instanceof Error ? err.message : "Unknown error");
       setLoading(false);
     }
-  };
+  }, [videoPath, navigate]);
+
+  useEffect(() => {
+    if (!videoPath) {
+      setError("No video path provided");
+      setLoading(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      handleCreateRun();
+    }, 1500); // Small delay to show the "Initializing" state
+
+    return () => clearTimeout(timer);
+  }, [videoPath, handleCreateRun]);
 
   return (
     <div className="container">
