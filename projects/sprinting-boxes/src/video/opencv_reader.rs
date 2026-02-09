@@ -31,20 +31,31 @@ impl OpencvReader {
             }
         }
 
-        let fps = capture.get(CAP_PROP_FPS)?;
+        let mut fps = capture.get(CAP_PROP_FPS)?;
+        if fps <= 0.0 {
+            tracing::warn!("OpencvReader: Failed to get FPS from metadata, falling back to 30.0");
+            fps = 30.0;
+        }
         let skip_count = (fps / sample_rate).round() as usize;
+
         Ok(Self {
             capture,
             _source_fps: fps,
-            _skip_count: skip_count,
+            _skip_count: skip_count.max(1),
         })
     }
 }
 
 impl VideoReader for OpencvReader {
     fn frame_count(&self) -> Result<usize> {
-        let count = self.capture.get(CAP_PROP_FRAME_COUNT)?;
-        Ok(count as usize)
+        let raw_count = self.capture.get(CAP_PROP_FRAME_COUNT)? as usize;
+        if self._skip_count > 0 {
+            // Number of times we call next_frame()
+            // Each call reads one frame and then grabs skip_count - 1 frames
+            Ok(raw_count.div_ceil(self._skip_count))
+        } else {
+            Ok(raw_count)
+        }
     }
 
     fn source_fps(&self) -> Result<f64> {

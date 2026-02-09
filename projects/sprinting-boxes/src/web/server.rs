@@ -1,8 +1,10 @@
 use crate::cli::Args;
 use crate::web::api::{
-    create_run_handler, extract_calibration_frames_handler, get_calibration_frames_handler,
-    get_run_handler, get_runs, get_videos, save_boundaries_handler, save_game_details_handler,
-    serve_calibration_frame_handler, update_run_handler,
+    compute_crops_handler, create_run_handler, extract_calibration_frames_handler,
+    get_calibration_frames_handler, get_crops_handler, get_run_handler, get_runs, get_videos,
+    processing_progress_handler, processing_progress_sse_handler, save_boundaries_handler,
+    save_game_details_handler, serve_calibration_frame_handler, start_processing_handler,
+    stop_processing_handler, update_run_handler,
 };
 use crate::web::assets::{index_handler, static_handler};
 use anyhow::Result;
@@ -64,6 +66,21 @@ pub async fn run_server(args: Args) -> Result<()> {
         .route(
             "/api/runs/:id/calibration/game-details",
             post(save_game_details_handler),
+        )
+        .route("/api/runs/:id/crops", get(get_crops_handler))
+        .route("/api/runs/:id/crops/compute", post(compute_crops_handler))
+        .route(
+            "/api/runs/:id/process/start",
+            post(start_processing_handler),
+        )
+        .route("/api/runs/:id/process/stop", post(stop_processing_handler))
+        .route(
+            "/api/runs/:id/process/progress",
+            get(processing_progress_handler),
+        )
+        .route(
+            "/api/runs/:id/process/progress/sse",
+            get(processing_progress_sse_handler),
         )
         .route("/", get(index_handler))
         .route("/*path", get(static_handler))

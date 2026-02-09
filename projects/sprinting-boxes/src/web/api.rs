@@ -1,5 +1,5 @@
 use crate::cli::Args;
-use crate::run_context::{list_runs, list_videos, VideoMetadata};
+use crate::run_context::{list_runs, list_videos, RunContext};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -17,7 +17,7 @@ pub struct VideoInfo {
 #[derive(Serialize)]
 pub struct RunInfo {
     pub name: String,
-    pub metadata: VideoMetadata,
+    pub run_context: RunContext,
 }
 
 #[derive(serde::Deserialize)]
@@ -28,7 +28,7 @@ pub struct CreateRunRequest {
 #[derive(Serialize)]
 pub struct RunDetailResponse {
     pub run_id: String,
-    pub metadata: VideoMetadata,
+    pub run_context: RunContext,
     pub missing_dependencies: Vec<crate::run_context::RunDependency>,
 }
 
@@ -42,16 +42,16 @@ pub async fn get_run_handler(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let (_, metadata) = runs
+    let (_, run_context) = runs
         .into_iter()
         .find(|(id, _)| id == &run_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
-    let missing_dependencies = metadata.validate_process_run_dependencies();
+    let missing_dependencies = run_context.validate_process_run_dependencies();
 
     Ok(Json(RunDetailResponse {
         run_id,
-        metadata,
+        run_context,
         missing_dependencies,
     }))
 }
@@ -68,12 +68,12 @@ pub async fn extract_calibration_frames_handler(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let (_, metadata) = runs
+    let (_, run_context) = runs
         .into_iter()
         .find(|(id, _)| id == &run_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
-    match metadata.extract_calibration_frames(video_root) {
+    match run_context.extract_calibration_frames(video_root) {
         Ok(paths) => {
             let filenames = paths
                 .into_iter()
@@ -102,12 +102,12 @@ pub async fn get_calibration_frames_handler(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let (_, metadata) = runs
+    let (_, run_context) = runs
         .into_iter()
         .find(|(id, _)| id == &run_id)
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;
 
-    let dir = metadata.get_calibration_frames_dir();
+    let dir = run_context.get_calibration_frames_dir();
     if !dir.exists() {
         return Ok(Json(Vec::new()));
     }
@@ -172,6 +172,54 @@ pub async fn save_boundaries_handler(
     }
 }
 
+pub async fn compute_crops_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<Json<crate::run_context::CropsConfig>, axum::http::StatusCode> {
+    let output_root = std::path::Path::new(&args.output_root);
+    let runs = crate::run_context::list_runs(output_root).map_err(|e| {
+        tracing::error!("Failed to list runs: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let (_, run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    match run_context.compute_and_save_crop_configs() {
+        Ok(crops) => Ok(Json(crops)),
+        Err(e) => {
+            tracing::error!("Failed to compute crop configs for {}: {}", run_id, e);
+            Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_crops_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<Json<crate::run_context::CropsConfig>, axum::http::StatusCode> {
+    let output_root = std::path::Path::new(&args.output_root);
+    let runs = crate::run_context::list_runs(output_root).map_err(|e| {
+        tracing::error!("Failed to list runs: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let (_, run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    match run_context.load_crop_configs() {
+        Ok(crops) => Ok(Json(crops)),
+        Err(e) => {
+            tracing::error!("Failed to load crop configs for {}: {}", run_id, e);
+            Err(axum::http::StatusCode::NOT_FOUND)
+        }
+    }
+}
+
 pub async fn save_game_details_handler(
     State(args): State<Arc<Args>>,
     Path(run_id): Path<String>,
@@ -221,7 +269,7 @@ pub async fn get_runs(State(args): State<Arc<Args>>) -> Json<Vec<RunInfo>> {
 
     let info_list = runs
         .into_iter()
-        .map(|(name, metadata)| RunInfo { name, metadata })
+        .map(|(name, run_context)| RunInfo { name, run_context })
         .collect();
 
     Json(info_list)
@@ -230,10 +278,11 @@ pub async fn get_runs(State(args): State<Arc<Args>>) -> Json<Vec<RunInfo>> {
 pub async fn create_run_handler(
     State(args): State<Arc<Args>>,
     Json(payload): Json<CreateRunRequest>,
-) -> Result<Json<VideoMetadata>, axum::http::StatusCode> {
+) -> Result<Json<RunContext>, axum::http::StatusCode> {
     let output_root = std::path::Path::new(&args.output_root);
-    match crate::run_context::create_run(output_root, &payload.video_path) {
-        Ok(metadata) => Ok(Json(metadata)),
+    let video_root = std::path::Path::new(&args.video_root);
+    match crate::run_context::create_run(output_root, video_root, &payload.video_path) {
+        Ok(run_context) => Ok(Json(run_context)),
         Err(e) => {
             tracing::error!("Failed to create run: {}", e);
             Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
@@ -244,8 +293,8 @@ pub async fn create_run_handler(
 pub async fn update_run_handler(
     State(args): State<Arc<Args>>,
     Path(run_id): Path<String>,
-    Json(mut payload): Json<VideoMetadata>,
-) -> Result<Json<VideoMetadata>, axum::http::StatusCode> {
+    Json(mut payload): Json<RunContext>,
+) -> Result<Json<RunContext>, axum::http::StatusCode> {
     let output_root = std::path::Path::new(&args.output_root);
     let run_dir = output_root.join(&run_id);
 
@@ -255,9 +304,100 @@ pub async fn update_run_handler(
 
     payload.output_dir = run_dir;
     if let Err(e) = payload.save() {
-        tracing::error!("Failed to update run metadata for {}: {}", run_id, e);
+        tracing::error!("Failed to update run context for {}: {}", run_id, e);
         return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     Ok(Json(payload))
+}
+
+// --- Processing API handlers ---
+
+pub async fn start_processing_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let output_root = std::path::Path::new(&args.output_root);
+    let video_root = std::path::Path::new(&args.video_root);
+
+    let runs = crate::run_context::list_runs(output_root).map_err(|e| {
+        tracing::error!("Failed to list runs: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let (_, run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    // Validate dependencies
+    let deps = run_context.validate_process_run_dependencies();
+    if deps.iter().any(|d| !d.valid) {
+        return Err(axum::http::StatusCode::PRECONDITION_FAILED);
+    }
+
+    // Start processing
+    match crate::pipeline::orchestrator::start_processing(&run_context, video_root) {
+        Ok(state) => Ok(Json(state.to_progress_json())),
+        Err(e) => {
+            tracing::error!("Failed to start processing for {}: {:?}", run_id, e);
+            Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn stop_processing_handler(
+    Path(run_id): Path<String>,
+) -> Result<Json<bool>, axum::http::StatusCode> {
+    let stopped = crate::pipeline::orchestrator::stop_processing(&run_id);
+    Ok(Json(stopped))
+}
+
+pub async fn processing_progress_handler(
+    Path(run_id): Path<String>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    match crate::pipeline::orchestrator::get_processing_state(&run_id) {
+        Some(state) => Ok(Json(state.to_progress_json())),
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+pub async fn processing_progress_sse_handler(
+    Path(run_id): Path<String>,
+) -> axum::response::Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
+    use axum::response::sse::Event;
+    use std::time::Duration;
+
+    tracing::info!("SSE: Connection request for run_id: {}", run_id);
+
+    let stream = async_stream::stream! {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            if let Some(state) = crate::pipeline::orchestrator::get_processing_state(&run_id) {
+                let json = state.to_progress_json();
+                let is_complete = json["is_complete"].as_bool().unwrap_or(false);
+
+                tracing::debug!("SSE: Yielding progress for {}: {}/{}",
+                    run_id, json["frames_processed"], json["total_frames"]);
+
+                yield Ok(Event::default().data(json.to_string()));
+
+                if is_complete {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        tracing::info!("SSE: Stream ended for {}", run_id);
+    };
+
+    axum::response::Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(1))
+            .text("keep-alive"),
+    )
 }

@@ -1,4 +1,6 @@
 mod cli;
+mod pipeline;
+mod run_artifacts;
 mod run_context;
 mod video;
 mod web;

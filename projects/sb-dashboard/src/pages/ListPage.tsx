@@ -9,7 +9,7 @@ interface VideoInfo {
 
 interface RunInfo {
   name: string;
-  metadata: {
+  run_context: {
     original_name: string;
     display_name: string;
     created_at: string;
@@ -45,7 +45,7 @@ const ListPage: React.FC = () => {
     );
   }
 
-  const runIds = new Set(runs.map((r) => r.metadata.run_id));
+  const runIds = new Set(runs.map((r) => r.run_context.run_id));
   const availableVideos = videos.filter((video) => {
     const stem = video.name.replace(/\.[^/.]+$/, "");
     return !runIds.has(stem);
@@ -111,12 +111,12 @@ const ListPage: React.FC = () => {
             ) : (
               runs.map((run) => (
                 <Link
-                  key={run.metadata.run_id}
-                  to={`/run-details/${run.metadata.run_id}`}
+                  key={run.run_context.run_id}
+                  to={`/run-details/${run.run_context.run_id}`}
                 >
                   <div className="glass-card list-item">
                     <div className="list-item-content">
-                      <h3>{run.metadata.display_name}</h3>
+                      <h3>{run.run_context.display_name}</h3>
                       <div
                         style={{
                           display: "flex",
@@ -137,7 +137,7 @@ const ListPage: React.FC = () => {
                           >
                             <Calendar size={12} />
                             {new Date(
-                              run.metadata.created_at,
+                              run.run_context.created_at,
                             ).toLocaleDateString()}
                           </div>
                           <div
@@ -150,12 +150,12 @@ const ListPage: React.FC = () => {
                             }}
                           >
                             <Users size={12} />
-                            Team: {run.metadata.team_size}
+                            Team: {run.run_context.team_size}
                           </div>
                         </div>
-                        {run.metadata.tags.length > 0 && (
+                        {run.run_context.tags.length > 0 && (
                           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                            {run.metadata.tags.map(tag => (
+                            {run.run_context.tags.map(tag => (
                               <span key={tag} className="badge" style={{ fontSize: '0.65rem', padding: '0.1rem 0.5rem', background: 'rgba(255,255,255,0.05)' }}>
                                 {tag}
                               </span>

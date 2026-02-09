@@ -23,6 +23,30 @@ pub struct Args {
 
 impl Args {
     pub fn parse_args() -> Self {
-        Self::parse()
+        let mut args = Self::parse();
+        args.resolve_roots();
+        args
+    }
+
+    fn resolve_roots(&mut self) {
+        for root in [&mut self.video_root, &mut self.output_root] {
+            let path = std::path::Path::new(root);
+            if path.exists() {
+                continue;
+            }
+
+            // Try resolving up to 3 levels up
+            for i in 1..=3 {
+                let mut prefix = std::path::PathBuf::new();
+                for _ in 0..i {
+                    prefix.push("..");
+                }
+                let candidate = prefix.join(path);
+                if candidate.exists() {
+                    *root = candidate.to_string_lossy().into_owned();
+                    break;
+                }
+            }
+        }
     }
 }
