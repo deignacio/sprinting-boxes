@@ -22,12 +22,17 @@ export interface RunDetail {
     missing_dependencies: RunDependency[];
 }
 
+export interface StageProgress {
+    current: number;
+    total: number;
+    ms_per_frame: number;
+}
+
 export interface ProcessingProgress {
     run_id: string;
-    frames_read: number;
-    frames_processed: number;
     total_frames: number;
     is_active: boolean;
     is_complete: boolean;
     error: string | null;
+    stages: Record<string, StageProgress>;
 }

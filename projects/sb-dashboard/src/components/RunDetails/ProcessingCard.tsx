@@ -1,5 +1,5 @@
 import React from "react";
-import { Play, AlertCircle, Database, Square } from "lucide-react";
+import { Play, AlertCircle, Square } from "lucide-react";
 import type { RunDetail, ProcessingProgress } from "../../types/run";
 
 interface ProcessingCardProps {
@@ -10,6 +10,8 @@ interface ProcessingCardProps {
     handleStartProcessing: () => void;
     handleStopProcessing: () => void;
 }
+
+const STAGE_ORDER = ["reader", "crop", "detect", "finalize"];
 
 const ProcessingCard: React.FC<ProcessingCardProps> = ({
     run,
@@ -56,7 +58,8 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
             )}
 
             {processingProgress && (
-                <div style={{ marginBottom: "1rem" }}>
+                <div style={{ marginBottom: "1.5rem" }}>
+                    {/* E2E Progress Bar */}
                     <div
                         style={{
                             display: "flex",
@@ -65,60 +68,87 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
                             fontSize: "0.875rem",
                         }}
                     >
-                        <span>{isProcessing ? "Processing frames..." : "Processing paused or complete"}</span>
+                        <span style={{ fontWeight: 500 }}>
+                            {processingProgress.is_complete ? "Processing complete" : isProcessing ? "Processing..." : "Paused"}
+                        </span>
                         <span>
-                            {processingProgress.frames_processed} / {processingProgress.total_frames}
+                            {Math.round(((processingProgress.stages.finalize?.current ?? 0) / (processingProgress.total_frames || 1)) * 100)}%
                         </span>
                     </div>
                     <div
                         style={{
                             background: "var(--bg-secondary)",
                             borderRadius: "4px",
-                            height: "8px",
+                            height: "10px",
                             overflow: "hidden",
+                            marginBottom: "1rem",
                         }}
                     >
                         <div
                             style={{
                                 background: "linear-gradient(90deg, #34d399, #06b6d4)",
                                 height: "100%",
-                                width: `${processingProgress.total_frames > 0
-                                    ? (processingProgress.frames_processed / processingProgress.total_frames) * 100
+                                width: `${(processingProgress.total_frames > 0)
+                                    ? ((processingProgress.stages.finalize?.current ?? 0) / processingProgress.total_frames) * 100
                                     : 0
                                     }%`,
                                 transition: "width 0.3s ease",
                             }}
                         />
                     </div>
-                    <div
-                        style={{
-                            fontSize: "0.75rem",
-                            color: "var(--text-muted)",
-                            marginTop: "0.5rem",
-                        }}
-                    >
-                        Frames read: {processingProgress.frames_read}
-                    </div>
-                </div>
-            )}
 
-            {processingProgress?.is_complete && (
-                <div
-                    style={{
-                        background: "rgba(52, 211, 153, 0.1)",
-                        border: "1px solid rgba(52, 211, 153, 0.2)",
-                        borderRadius: "8px",
-                        padding: "0.75rem 1rem",
-                        marginBottom: "1rem",
-                        color: "#34d399",
-                        fontSize: "0.875rem",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "0.5rem",
-                    }}
-                >
-                    <Database size={16} />
-                    Processing complete! {processingProgress.frames_processed} frames processed.
+                    {/* Global Metrics - FPS based on the bottleneck (slowest) stage */}
+                    {isProcessing && Object.values(processingProgress.stages).some(s => s.ms_per_frame > 0) && (
+                        <div style={{
+                            display: "flex",
+                            justifyContent: "center",
+                            background: "rgba(6, 182, 212, 0.05)",
+                            padding: "0.5rem",
+                            borderRadius: "6px",
+                            fontSize: "0.875rem",
+                            color: "var(--accent-secondary)",
+                            fontWeight: 600,
+                            marginBottom: "1rem"
+                        }}>
+                            Global: {(1000 / Math.max(...Object.values(processingProgress.stages).map(s => s.ms_per_frame || 0.1))).toFixed(1)} FPS
+                        </div>
+                    )}
+
+                    {/* Stage Breakdown */}
+                    <div style={{ display: "grid", gap: "0.75rem" }}>
+                        {STAGE_ORDER.map((name) => {
+                            const stage = processingProgress.stages[name];
+                            if (!stage) return null;
+                            return (
+                                <div key={name} style={{
+                                    fontSize: "0.75rem",
+                                    display: "grid",
+                                    gridTemplateColumns: "70px 100px 1fr 60px",
+                                    alignItems: "center",
+                                    gap: "1rem",
+                                    padding: "0.25rem 0",
+                                    borderBottom: "1px solid rgba(255,255,255,0.05)"
+                                }}>
+                                    <span style={{ textTransform: "capitalize", color: "var(--text-muted)", fontWeight: 500 }}>{name}</span>
+                                    <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--text-muted)" }}>
+                                        {stage.current} / {stage.total}
+                                    </span>
+                                    <div style={{ height: "4px", background: "var(--bg-secondary)", borderRadius: "2px", overflow: "hidden" }}>
+                                        <div style={{
+                                            height: "100%",
+                                            background: "var(--accent-secondary)",
+                                            opacity: 0.5,
+                                            width: `${(stage.total > 0) ? (stage.current / stage.total) * 100 : 0}%`,
+                                            transition: "width 0.3s ease"
+                                        }} />
+                                    </div>
+                                    <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                                        {stage.ms_per_frame > 0 ? `${stage.ms_per_frame.toFixed(1)}ms` : "--"}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 

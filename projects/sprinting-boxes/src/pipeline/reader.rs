@@ -20,6 +20,7 @@ pub fn read_worker(
     let mut count = 0;
 
     while let Ok(mat) = reader.next_frame() {
+        let start_inst = std::time::Instant::now();
         if !state.is_active.load(Ordering::Relaxed) {
             break;
         }
@@ -29,7 +30,8 @@ pub fn read_worker(
         }
 
         count += 1;
-        state.frames_read.store(count, Ordering::Relaxed);
+        let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
+        state.update_stage("reader", count, duration_ms);
     }
 
     Ok(())

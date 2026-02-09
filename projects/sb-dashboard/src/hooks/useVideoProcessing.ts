@@ -99,12 +99,11 @@ export const useVideoProcessing = (id: string | undefined, run: RunDetail | null
         // Don't set isProcessing=true yet to avoid race condition with SSE
         setProcessingProgress({
             run_id: run.run_id,
-            frames_read: 0,
-            frames_processed: 0,
             total_frames: 0,
             is_active: true,
             is_complete: false,
-            error: null
+            error: null,
+            stages: {}
         });
 
         try {

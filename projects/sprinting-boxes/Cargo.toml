@@ -28,3 +28,8 @@ futures = "0.3.31"
 geo = { version = "0.28", features = ["use-serde"] }
 geo-types = "0.7"
 geo-buffer = "0.1"
+usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "ort-download-binaries", "github", "image-default-formats", "hf-hub"] }
+image = "0.25.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "ort-download-binaries", "github", "image-default-formats", "coreml", "hf-hub"] }

@@ -4,11 +4,9 @@ use crate::pipeline::types::{
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
 use opencv::prelude::*;
-use opencv::{core, imgcodecs, imgproc};
-use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use opencv::{core, imgproc};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Transforms polygon coordinates from global to crop-local space.
 fn transform_polygon(poly: &[Point], bbox: &BBox, crop_w: f32, crop_h: f32) -> Vec<Point> {
@@ -85,8 +83,10 @@ pub fn crop_worker(
     tx: Sender<PreprocessedFrame>,
     configs: Arc<Vec<CropConfig>>,
     enable_clahe: bool,
+    state: Arc<ProcessingState>,
 ) -> Result<()> {
     for frame in rx {
+        let start_inst = Instant::now();
         let mut crop_data_list = Vec::with_capacity(configs.len());
 
         for config in configs.iter() {
@@ -107,11 +107,14 @@ pub fn crop_worker(
 
             crop_data_list.push(CropData {
                 image: crop,
-                original_polygon: Some(original_poly_local),
-                effective_polygon: Some(effective_poly_local),
+                original_polygon: original_poly_local,
+                effective_polygon: effective_poly_local,
                 suffix: config.suffix.clone(),
             });
         }
+
+        let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
+        state.update_stage("crop", frame.id, duration_ms);
 
         if tx
             .send(PreprocessedFrame {
@@ -125,51 +128,4 @@ pub fn crop_worker(
     }
 
     Ok(())
-}
-
-/// Crop worker that saves images to disk
-pub fn save_crops_worker(
-    rx: Receiver<RawFrame>,
-    configs: Arc<Vec<CropConfig>>,
-    output_dir: PathBuf,
-    state: Arc<ProcessingState>,
-) {
-    let crops_dir = output_dir.join("crops");
-    if let Err(e) = fs::create_dir_all(&crops_dir) {
-        *state.error.write().unwrap() = Some(format!("Failed to create crops dir: {}", e));
-        state.is_active.store(false, Ordering::Relaxed);
-        return;
-    }
-
-    for frame in rx {
-        if !state.is_active.load(Ordering::Relaxed) {
-            break;
-        }
-
-        for config in configs.iter() {
-            match crop_normalized(&frame.mat, &config.bbox) {
-                Ok(crop) => {
-                    let filename = format!("frame_{:06}_{}.jpg", frame.id, config.suffix);
-                    let path = crops_dir.join(&filename);
-
-                    let params = opencv::core::Vector::<i32>::new();
-                    if let Err(e) = imgcodecs::imwrite(path.to_str().unwrap(), &crop, &params) {
-                        tracing::warn!("Failed to write crop {}: {}", filename, e);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to crop frame {} for {}: {}",
-                        frame.id,
-                        config.suffix,
-                        e
-                    );
-                }
-            }
-        }
-        state.frames_processed.fetch_add(1, Ordering::Relaxed);
-    }
-
-    state.is_complete.store(true, Ordering::Relaxed);
-    state.is_active.store(false, Ordering::Relaxed);
 }

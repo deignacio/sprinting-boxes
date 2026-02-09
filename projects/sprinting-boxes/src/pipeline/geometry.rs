@@ -111,8 +111,9 @@ pub fn compute_bbox_with_crop_padding(points: &[Point], crop_padding_pct: f32) -
 }
 
 /// Robust point-in-polygon using geo crate
-pub fn is_point_in_polygon_robust(x: f32, y: f32, polygon_points: &[Point]) -> bool {
-    let poly = to_geo_polygon(polygon_points);
+#[allow(dead_code)]
+pub fn is_point_in_polygon_robust(x: f32, y: f32, polygon: &[Point]) -> bool {
+    let poly = to_geo_polygon(polygon);
     let point = GeoPoint::new(x as f64, y as f64);
     poly.contains(&point)
 }
