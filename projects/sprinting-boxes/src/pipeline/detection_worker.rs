@@ -78,6 +78,14 @@ pub fn detection_worker(
             .send(DetectedFrame {
                 id: frame.id,
                 results,
+                left_count: 0.0,
+                right_count: 0.0,
+                field_count: 0.0,
+                pre_point_score: 0.0,
+                is_cliff: false,
+                left_emptied_first: false,
+                right_emptied_first: false,
+                maybe_false_positive: false,
             })
             .is_err()
         {

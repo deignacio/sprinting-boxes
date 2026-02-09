@@ -56,6 +56,14 @@ impl ProcessingState {
             },
         );
         stages.insert(
+            "feature".to_string(),
+            StageProgress {
+                current: 0,
+                total: total_frames,
+                ms_per_frame: 0.0,
+            },
+        );
+        stages.insert(
             "finalize".to_string(),
             StageProgress {
                 current: 0,
@@ -205,4 +213,14 @@ pub struct CropResult {
 pub struct DetectedFrame {
     pub id: usize,
     pub results: Vec<CropResult>,
+    // Feature fields
+    pub left_count: f32,
+    pub right_count: f32,
+    pub field_count: f32,
+    pub pre_point_score: f32,
+    pub is_cliff: bool,
+    // Heuristic results
+    pub left_emptied_first: bool,
+    pub right_emptied_first: bool,
+    pub maybe_false_positive: bool,
 }

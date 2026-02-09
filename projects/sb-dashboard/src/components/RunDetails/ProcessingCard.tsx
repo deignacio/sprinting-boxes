@@ -11,7 +11,7 @@ interface ProcessingCardProps {
     handleStopProcessing: () => void;
 }
 
-const STAGE_ORDER = ["reader", "crop", "detect", "finalize"];
+const STAGE_ORDER = ["reader", "crop", "detect", "feature", "finalize"];
 
 const ProcessingCard: React.FC<ProcessingCardProps> = ({
     run,

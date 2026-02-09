@@ -110,7 +110,7 @@ pub fn start_processing(
         }
     });
 
-    // Spawn 3: Detect
+    // Spawn 3: Detection
     let state_d = state.clone();
     thread::spawn(move || {
         if let Err(e) = crate::pipeline::detection_worker::detection_worker(
@@ -125,7 +125,23 @@ pub fn start_processing(
         }
     });
 
-    // Spawn 4: Finalize
+    // Spawn 4: Feature extraction
+    let (tx_f, rx_f) = crossbeam::channel::unbounded();
+    let state_feat = state.clone();
+    let output_dir_feat = run_context.output_dir.clone();
+    thread::spawn(move || {
+        let config = crate::pipeline::feature::FeatureConfig {
+            team_size: 7,
+            lookback_frames: 10,
+            lookahead_frames: 15,
+            output_dir: output_dir_feat,
+        };
+        if let Err(e) = crate::pipeline::feature::feature_worker(rx_d, tx_f, config, state_feat) {
+            tracing::error!("Feature worker failed: {}", e);
+        }
+    });
+
+    // Spawn 5: Finalize
     let state_f = state.clone();
     let output_dir = run_context.output_dir.clone();
     let save_visuals = std::env::var("SAVE_VISUAL_CROPS")
@@ -134,7 +150,7 @@ pub fn start_processing(
 
     thread::spawn(move || {
         if let Err(e) =
-            crate::pipeline::finalize::finalize_worker(rx_d, output_dir, save_visuals, state_f)
+            crate::pipeline::finalize::finalize_worker(rx_f, output_dir, save_visuals, state_f)
         {
             tracing::error!("Finalize worker failed: {}", e);
         }
