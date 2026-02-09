@@ -19,6 +19,10 @@ pub struct Args {
     /// Root directory for output artifacts
     #[arg(long, env = "SPRINTING_BOXES_OUTPUT_ROOT")]
     pub output_root: String,
+
+    /// Path to detection model
+    #[arg(long, default_value = "rtdetr/v2-m.onnx")]
+    pub model_path: String,
 }
 
 impl Args {

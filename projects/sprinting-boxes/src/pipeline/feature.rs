@@ -424,8 +424,28 @@ pub fn feature_worker(
                             } else if r < l {
                                 frame.right_emptied_first = true;
                             } else {
-                                frame.left_emptied_first = true;
-                                frame.right_emptied_first = true;
+                                // Both emptied at the same time: look back for tie-breaker
+                                let mut winner_found = false;
+                                for back_idx in (0..l).rev() {
+                                    if back_idx >= history_buffer.len() {
+                                        break;
+                                    }
+                                    let h = &history_buffer[back_idx];
+                                    if h.left_count < h.right_count {
+                                        frame.left_emptied_first = true;
+                                        winner_found = true;
+                                        break;
+                                    } else if h.right_count < h.left_count {
+                                        frame.right_emptied_first = true;
+                                        winner_found = true;
+                                        break;
+                                    }
+                                }
+                                if !winner_found {
+                                    // True tie if no difference found
+                                    frame.left_emptied_first = true;
+                                    frame.right_emptied_first = true;
+                                }
                             }
                         }
                         (Some(_), None) => frame.left_emptied_first = true,

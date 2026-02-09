@@ -84,8 +84,26 @@ pub fn crop_worker(
     configs: Arc<Vec<CropConfig>>,
     enable_clahe: bool,
     state: Arc<ProcessingState>,
+    target_count: Arc<std::sync::atomic::AtomicUsize>,
 ) -> Result<()> {
     for frame in rx {
+        // Dynamic scaling check
+        let current_target = target_count.load(std::sync::atomic::Ordering::Relaxed);
+        let current_active = state
+            .active_crop_workers
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if current_active > current_target {
+            tracing::info!(
+                "Crop worker scaling down: active ({}) > target ({})",
+                current_active,
+                current_target
+            );
+            // Exit after processing this frame? Or before?
+            // If we consumed the frame, we must process it.
+            // But we can check before next iteration.
+        }
+
         let start_inst = Instant::now();
         let mut crop_data_list = Vec::with_capacity(configs.len());
 
@@ -123,6 +141,16 @@ pub fn crop_worker(
             })
             .is_err()
         {
+            break;
+        }
+
+        // Check if we should exit after processing
+        let current_target = target_count.load(std::sync::atomic::Ordering::Relaxed);
+        let current_active = state
+            .active_crop_workers
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if current_active > current_target {
+            tracing::info!("Crop worker exiting to scale down");
             break;
         }
     }

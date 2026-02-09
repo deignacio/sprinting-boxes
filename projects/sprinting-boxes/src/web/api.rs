@@ -311,7 +311,26 @@ pub async fn update_run_handler(
     Ok(Json(payload))
 }
 
+#[derive(serde::Deserialize)]
+pub struct UpdateWorkerRequest {
+    pub delta: i32,
+    pub stage: String,
+}
+
 // --- Processing API handlers ---
+
+pub async fn update_worker_count_handler(
+    Path(run_id): Path<String>,
+    Json(payload): Json<UpdateWorkerRequest>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    if let Some(new_count) =
+        crate::pipeline::orchestrator::scale_workers(&run_id, &payload.stage, payload.delta)
+    {
+        Ok(Json(serde_json::json!({ "active_workers": new_count })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
 
 pub async fn start_processing_handler(
     State(args): State<Arc<Args>>,
@@ -337,7 +356,11 @@ pub async fn start_processing_handler(
     }
 
     // Start processing
-    match crate::pipeline::orchestrator::start_processing(&run_context, video_root) {
+    match crate::pipeline::orchestrator::start_processing(
+        &run_context,
+        video_root,
+        &args.model_path,
+    ) {
         Ok(state) => Ok(Json(state.to_progress_json())),
         Err(e) => {
             tracing::error!("Failed to start processing for {}: {:?}", run_id, e);

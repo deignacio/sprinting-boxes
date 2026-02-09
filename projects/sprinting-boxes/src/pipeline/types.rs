@@ -25,6 +25,14 @@ pub struct ProcessingState {
     pub error: RwLock<Option<String>>,
     /// Progress per stage (e.g., "reader", "crop", "detect", "finalize")
     pub stages: RwLock<BTreeMap<String, StageProgress>>,
+    /// Number of active crop workers
+    pub active_crop_workers: std::sync::atomic::AtomicUsize,
+    /// Number of active detection workers
+    pub active_detect_workers: std::sync::atomic::AtomicUsize,
+    /// Overall processing rate (frames per second)
+    pub processing_rate: RwLock<f64>,
+    /// Start time of processing
+    pub start_time: std::time::Instant,
 }
 
 impl ProcessingState {
@@ -79,6 +87,10 @@ impl ProcessingState {
             is_complete: AtomicBool::new(false),
             error: RwLock::new(None),
             stages: RwLock::new(stages),
+            active_crop_workers: std::sync::atomic::AtomicUsize::new(0),
+            active_detect_workers: std::sync::atomic::AtomicUsize::new(0),
+            processing_rate: RwLock::new(0.0),
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -97,13 +109,44 @@ impl ProcessingState {
     }
 
     pub fn to_progress_json(&self) -> serde_json::Value {
+        let stages = self.stages.read().unwrap();
+
+        // Calculate effective FPS based on finalized frames
+        let finalized = stages.get("finalize").map(|s| s.current).unwrap_or(0);
+        let elapsed = self.start_time.elapsed().as_secs_f64();
+        let effective_fps = if elapsed > 0.0 {
+            finalized as f64 / elapsed
+        } else {
+            0.0
+        };
+
+        // Convert stages to JSON with extra 'fps' field
+        let stages_json: BTreeMap<String, serde_json::Value> = stages
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    serde_json::json!({
+                        "current": v.current,
+                        "total": v.total,
+                        "ms_per_frame": v.ms_per_frame,
+                        "fps": if v.ms_per_frame > 0.0 { 1000.0 / v.ms_per_frame } else { 0.0 }
+                    }),
+                )
+            })
+            .collect();
+
         serde_json::json!({
             "run_id": self.run_id,
             "total_frames": self.total_frames,
             "is_active": self.is_active.load(Ordering::Relaxed),
             "is_complete": self.is_complete.load(Ordering::Relaxed),
             "error": self.error.read().unwrap().clone(),
-            "stages": *self.stages.read().unwrap(),
+            "stages": stages_json,
+            "active_crop_workers": self.active_crop_workers.load(Ordering::Relaxed),
+            "active_detect_workers": self.active_detect_workers.load(Ordering::Relaxed),
+            "processing_rate": *self.processing_rate.read().unwrap(), // Internal inference rate
+            "effective_fps": effective_fps, // Output throughput
         })
     }
 }

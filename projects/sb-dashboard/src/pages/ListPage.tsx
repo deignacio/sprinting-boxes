@@ -154,9 +154,23 @@ const ListPage: React.FC = () => {
                           </div>
                         </div>
                         {run.run_context.tags.length > 0 && (
-                          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                            {run.run_context.tags.map(tag => (
-                              <span key={tag} className="badge" style={{ fontSize: '0.65rem', padding: '0.1rem 0.5rem', background: 'rgba(255,255,255,0.05)' }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: "0.5rem",
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            {run.run_context.tags.map((tag) => (
+                              <span
+                                key={tag}
+                                className="badge"
+                                style={{
+                                  fontSize: "0.65rem",
+                                  padding: "0.1rem 0.5rem",
+                                  background: "rgba(255,255,255,0.05)",
+                                }}
+                              >
                                 {tag}
                               </span>
                             ))}

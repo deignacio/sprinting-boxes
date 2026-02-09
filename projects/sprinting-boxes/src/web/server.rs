@@ -4,9 +4,13 @@ use crate::web::api::{
     get_calibration_frames_handler, get_crops_handler, get_run_handler, get_runs, get_videos,
     processing_progress_handler, processing_progress_sse_handler, save_boundaries_handler,
     save_game_details_handler, serve_calibration_frame_handler, start_processing_handler,
-    stop_processing_handler, update_run_handler,
+    stop_processing_handler, update_run_handler, update_worker_count_handler,
 };
 use crate::web::assets::{index_handler, static_handler};
+use crate::web::audit::{
+    get_cliffs_handler, get_features_handler, get_youtube_chapters_handler, save_audit_handler,
+    serve_run_crop_handler, update_audit_settings_handler, update_cliff_field_handler,
+};
 use anyhow::Result;
 use axum::{
     routing::{get, post, put},
@@ -82,6 +86,26 @@ pub async fn run_server(args: Args) -> Result<()> {
             "/api/runs/:id/process/progress/sse",
             get(processing_progress_sse_handler),
         )
+        .route(
+            "/api/runs/:id/process/workers",
+            post(update_worker_count_handler),
+        )
+        .route("/api/runs/:id/audit/cliffs", get(get_cliffs_handler))
+        .route("/api/runs/:id/audit/cliffs", post(save_audit_handler))
+        .route(
+            "/api/runs/:id/audit/settings",
+            post(update_audit_settings_handler),
+        )
+        .route(
+            "/api/runs/:id/audit/cliffs/:frame/:field",
+            post(update_cliff_field_handler),
+        )
+        .route("/api/runs/:id/audit/features", get(get_features_handler))
+        .route(
+            "/api/runs/:id/export/youtube",
+            get(get_youtube_chapters_handler),
+        )
+        .route("/api/runs/:id/crops/:filename", get(serve_run_crop_handler))
         .route("/", get(index_handler))
         .route("/*path", get(static_handler))
         .with_state(shared_args);

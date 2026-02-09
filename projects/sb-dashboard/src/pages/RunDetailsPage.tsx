@@ -5,13 +5,24 @@ import RunHeader from "../components/RunDetails/RunHeader";
 import PropertiesCard from "../components/RunDetails/PropertiesCard";
 import DependenciesCard from "../components/RunDetails/DependenciesCard";
 import ProcessingCard from "../components/RunDetails/ProcessingCard";
+import AuditView from "../components/RunDetails/AuditView";
+import CliffDetail from "../components/RunDetails/CliffDetail";
 import { useRunDetails } from "../hooks/useRunDetails";
 import { useVideoProcessing } from "../hooks/useVideoProcessing";
+import { type CliffData, type AuditSettings } from "../utils/auditUtils";
+
+type ViewState = "overview" | "audit" | "cliff_detail";
 
 const RunDetailsPage: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [showBoundaryEditor, setShowBoundaryEditor] = useState(false);
+  const [view, setView] = useState<ViewState>("overview");
+  const [selectedCliff, setSelectedCliff] = useState<CliffData | null>(null);
+  const [allCliffs, setAllCliffs] = useState<CliffData[]>([]);
+  const [auditSettings, setAuditSettings] = useState<AuditSettings | null>(
+    null,
+  );
 
   const {
     run,
@@ -22,10 +33,6 @@ const RunDetailsPage: React.FC = () => {
     setEditName,
     editTeamSize,
     setEditTeamSize,
-    editLightTeamName,
-    setEditLightTeamName,
-    editDarkTeamName,
-    setEditDarkTeamName,
     editTags,
     setEditTags,
     editSampleRate,
@@ -42,7 +49,43 @@ const RunDetailsPage: React.FC = () => {
     handleComputeCrops,
     handleStartProcessing,
     handleStopProcessing,
+    handleUpdateWorkers,
   } = useVideoProcessing(id, run, fetchRun);
+
+  // Load full audit state
+  const loadAuditData = async () => {
+    try {
+      const response = await fetch(`/api/runs/${id}/audit/cliffs`);
+      if (response.ok) {
+        const data = await response.json();
+        setAllCliffs(data.cliffs);
+        setAuditSettings(data.settings);
+      }
+    } catch (err) {
+      console.error("Failed to load audit data", err);
+    }
+  };
+
+  const handleUpdateSettings = async (newSettings: AuditSettings) => {
+    try {
+      await fetch(`/api/runs/${id}/audit/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newSettings),
+      });
+      // Reload to get recalculated scores
+      await loadAuditData();
+    } catch (err) {
+      console.error("Failed to update settings", err);
+    }
+  };
+
+  const handleCliffClick = (cliff: CliffData) => {
+    setSelectedCliff(cliff);
+    setView("cliff_detail");
+    // Ensure we have the full list for navigation
+    if (allCliffs.length === 0) loadAuditData();
+  };
 
   if (loading) {
     return <div className="container empty-state">Loading run details...</div>;
@@ -60,6 +103,27 @@ const RunDetailsPage: React.FC = () => {
           Back to Dashboard
         </button>
       </div>
+    );
+  }
+
+  // If in cliff detail view, show full screen component
+  if (view === "cliff_detail" && selectedCliff && auditSettings) {
+    return (
+      <CliffDetail
+        key={selectedCliff.frame_index}
+        runId={id!}
+        cliff={selectedCliff}
+        allCliffs={allCliffs}
+        settings={auditSettings}
+        onUpdateSettings={handleUpdateSettings}
+        onBack={() => setView("audit")}
+        onNavigate={(cliff) => setSelectedCliff(cliff)}
+      />
+    );
+  } else if (view === "cliff_detail" && !auditSettings) {
+    loadAuditData(); // lazy load if missing
+    return (
+      <div className="container empty-state">Loading audit settings...</div>
     );
   }
 
@@ -87,45 +151,97 @@ const RunDetailsPage: React.FC = () => {
             onBack={() => navigate("/")}
           />
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 space-y-8">
-              <PropertiesCard
-                run={run}
-                isEditing={isEditing}
-                editTeamSize={editTeamSize}
-                setEditTeamSize={setEditTeamSize}
-                editLightTeamName={editLightTeamName}
-                setEditLightTeamName={setEditLightTeamName}
-                editDarkTeamName={editDarkTeamName}
-                setEditDarkTeamName={setEditDarkTeamName}
-                editTags={editTags}
-                setEditTags={setEditTags}
-                editSampleRate={editSampleRate}
-                setEditSampleRate={setEditSampleRate}
-              />
-            </div>
-
-            <div className="space-y-8">
-              <DependenciesCard
-                run={run}
-                setShowBoundaryEditor={setShowBoundaryEditor}
-                onComputeCrops={handleComputeCrops}
-              />
-
-              <ProcessingCard
-                run={run}
-                isProcessing={isProcessing}
-                processingProgress={processingProgress}
-                processingError={processingError}
-                handleStartProcessing={handleStartProcessing}
-                handleStopProcessing={handleStopProcessing}
-              />
-            </div>
+          {/* Tab Navigation */}
+          <div
+            style={{
+              marginBottom: "2rem",
+              borderBottom: "1px solid #334155",
+              display: "flex",
+              gap: "2rem",
+            }}
+          >
+            <button
+              onClick={() => setView("overview")}
+              style={{
+                padding: "0.75rem 0",
+                background: "transparent",
+                color: view === "overview" ? "#34d399" : "#94a3b8",
+                border: "none",
+                borderBottom:
+                  view === "overview"
+                    ? "2px solid #34d399"
+                    : "2px solid transparent",
+                cursor: "pointer",
+                fontSize: "1rem",
+                fontWeight: view === "overview" ? 600 : 400,
+              }}
+            >
+              Overview
+            </button>
+            <button
+              onClick={() => {
+                setView("audit");
+                loadAuditData();
+              }}
+              style={{
+                padding: "0.75rem 0",
+                background: "transparent",
+                color: view === "audit" ? "#34d399" : "#94a3b8",
+                border: "none",
+                borderBottom:
+                  view === "audit"
+                    ? "2px solid #34d399"
+                    : "2px solid transparent",
+                cursor: "pointer",
+                fontSize: "1rem",
+                fontWeight: view === "audit" ? 600 : 400,
+              }}
+            >
+              Point Audit
+            </button>
           </div>
+
+          {view === "overview" && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 space-y-8">
+                <PropertiesCard
+                  run={run}
+                  isEditing={isEditing}
+                  editTeamSize={editTeamSize}
+                  setEditTeamSize={setEditTeamSize}
+                  editTags={editTags}
+                  setEditTags={setEditTags}
+                  editSampleRate={editSampleRate}
+                  setEditSampleRate={setEditSampleRate}
+                />
+              </div>
+
+              <div className="space-y-8">
+                <DependenciesCard
+                  run={run}
+                  setShowBoundaryEditor={setShowBoundaryEditor}
+                  onComputeCrops={handleComputeCrops}
+                />
+
+                <ProcessingCard
+                  run={run}
+                  isProcessing={isProcessing}
+                  processingProgress={processingProgress}
+                  processingError={processingError}
+                  handleStartProcessing={handleStartProcessing}
+                  handleStopProcessing={handleStopProcessing}
+                  handleUpdateWorkers={handleUpdateWorkers}
+                />
+              </div>
+            </div>
+          )}
+
+          {view === "audit" && (
+            <AuditView runId={id!} onCliffClick={handleCliffClick} />
+          )}
         </>
       )}
     </div>
   );
 };
-
 export default RunDetailsPage;

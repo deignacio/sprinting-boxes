@@ -6,7 +6,11 @@ const CreateRunPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const videoPath = searchParams.get("video") || "";
-  const stem = videoPath.split("/").pop()?.replace(/\.[^/.]+$/, "") || "Unknown Video";
+  const stem =
+    videoPath
+      .split("/")
+      .pop()
+      ?.replace(/\.[^/.]+$/, "") || "Unknown Video";
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +64,12 @@ const CreateRunPage: React.FC = () => {
 
       <div
         className="glass-card"
-        style={{ maxWidth: "500px", margin: "4rem auto", textAlign: 'center', padding: '3rem 2rem' }}
+        style={{
+          maxWidth: "500px",
+          margin: "4rem auto",
+          textAlign: "center",
+          padding: "3rem 2rem",
+        }}
       >
         <div
           style={{
@@ -75,7 +84,11 @@ const CreateRunPage: React.FC = () => {
           }}
         >
           {loading ? (
-            <Loader2 className="animate-spin" size={40} color="var(--accent-primary)" />
+            <Loader2
+              className="animate-spin"
+              size={40}
+              color="var(--accent-primary)"
+            />
           ) : (
             <Play size={40} color="var(--accent-secondary)" />
           )}
@@ -90,14 +103,20 @@ const CreateRunPage: React.FC = () => {
           </>
         ) : error ? (
           <>
-            <h1 style={{ color: '#f87171' }}>Initialization Failed</h1>
-            <p style={{ color: "var(--text-secondary)", marginTop: "1rem", marginBottom: '2rem' }}>
+            <h1 style={{ color: "#f87171" }}>Initialization Failed</h1>
+            <p
+              style={{
+                color: "var(--text-secondary)",
+                marginTop: "1rem",
+                marginBottom: "2rem",
+              }}
+            >
               {error}
             </p>
             <button
               onClick={handleCreateRun}
               className="btn btn-primary"
-              style={{ margin: '0 auto' }}
+              style={{ margin: "0 auto" }}
             >
               Retry
             </button>

@@ -23,12 +23,29 @@ pub fn detection_worker(
     min_conf: f32,
     slice_config: SliceConfig,
     state: Arc<ProcessingState>,
+    target_count: Arc<std::sync::atomic::AtomicUsize>,
 ) -> Result<()> {
-    // Initialize detector
-    let mut detector = ObjectDetector::new(model_path)?;
+    // Load Yolo model
+    let mut detector = ObjectDetector::new(model_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
     let slicing_enabled = slice_config.is_enabled();
 
     for frame in rx {
+        // Dynamic scaling check
+        let current_target = target_count.load(std::sync::atomic::Ordering::Relaxed);
+        let current_active = state
+            .active_detect_workers
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if current_active > current_target {
+            tracing::info!(
+                "Detection worker scaling down: active ({}) > target ({})",
+                current_active,
+                current_target
+            );
+            // Exit logic?
+        }
+
         let start_inst = Instant::now();
         let mut results = Vec::with_capacity(frame.crops.len());
 
@@ -74,6 +91,18 @@ pub fn detection_worker(
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
         state.update_stage("detect", frame.id, duration_ms);
 
+        // Update overall processing rate
+        {
+            if let Ok(mut rate) = state.processing_rate.write() {
+                let current_fps = 1000.0 / duration_ms;
+                if *rate == 0.0 {
+                    *rate = current_fps;
+                } else {
+                    *rate = *rate * 0.95 + current_fps * 0.05;
+                }
+            }
+        }
+
         if tx
             .send(DetectedFrame {
                 id: frame.id,
@@ -89,6 +118,16 @@ pub fn detection_worker(
             })
             .is_err()
         {
+            break;
+        }
+
+        // Check if we should exit after processing
+        let current_target = target_count.load(std::sync::atomic::Ordering::Relaxed);
+        let current_active = state
+            .active_detect_workers
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if current_active > current_target {
+            tracing::info!("Detection worker exiting to scale down");
             break;
         }
     }
