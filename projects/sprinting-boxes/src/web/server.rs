@@ -1,15 +1,17 @@
 use crate::cli::Args;
 use crate::web::api::{
-    compute_crops_handler, create_run_handler, extract_calibration_frames_handler,
-    get_calibration_frames_handler, get_crops_handler, get_run_handler, get_runs, get_videos,
-    processing_progress_handler, processing_progress_sse_handler, save_boundaries_handler,
-    save_game_details_handler, serve_calibration_frame_handler, start_processing_handler,
-    stop_processing_handler, update_run_handler, update_worker_count_handler,
+    backfill_metadata_handler, compute_crops_handler, create_run_handler,
+    extract_calibration_frames_handler, get_calibration_frames_handler, get_crops_handler,
+    get_run_handler, get_runs, get_videos, processing_progress_handler,
+    processing_progress_sse_handler, save_boundaries_handler, save_game_details_handler,
+    serve_calibration_frame_handler, start_processing_handler, stop_processing_handler,
+    update_run_handler, update_worker_count_handler,
 };
 use crate::web::assets::{index_handler, static_handler};
 use crate::web::audit::{
-    get_cliffs_handler, get_features_handler, get_youtube_chapters_handler, save_audit_handler,
-    serve_run_crop_handler, update_audit_settings_handler, update_cliff_field_handler,
+    get_cliffs_handler, get_features_handler, get_studio_clips_handler,
+    get_youtube_chapters_handler, save_audit_handler, serve_run_crop_handler,
+    update_audit_settings_handler, update_cliff_field_handler,
 };
 use anyhow::Result;
 use axum::{
@@ -51,6 +53,10 @@ pub async fn run_server(args: Args) -> Result<()> {
         .route("/api/runs", post(create_run_handler))
         .route("/api/runs/:id", get(get_run_handler))
         .route("/api/runs/:id", put(update_run_handler))
+        .route(
+            "/api/runs/:id/metadata/backfill",
+            post(backfill_metadata_handler),
+        )
         .route(
             "/api/runs/:id/calibration/extract",
             post(extract_calibration_frames_handler),
@@ -104,6 +110,10 @@ pub async fn run_server(args: Args) -> Result<()> {
         .route(
             "/api/runs/:id/export/youtube",
             get(get_youtube_chapters_handler),
+        )
+        .route(
+            "/api/runs/:id/export/studio-clips",
+            get(get_studio_clips_handler),
         )
         .route("/api/runs/:id/crops/:filename", get(serve_run_crop_handler))
         .route("/", get(index_handler))

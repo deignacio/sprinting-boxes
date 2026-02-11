@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use opencv::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,10 @@ pub struct RunContext {
     pub tags: Vec<String>,
     #[serde(default = "default_sample_rate")]
     pub sample_rate: f64,
+    #[serde(default)]
+    pub total_frames: usize,
+    #[serde(default)]
+    pub fps: f64,
     #[serde(skip)]
     pub output_dir: PathBuf,
 }
@@ -38,6 +43,8 @@ impl RunContext {
             dark_team_name: "Dark".to_string(),
             tags: Vec::new(),
             sample_rate: 1.0,
+            total_frames: 0,
+            fps: 30.0,
             output_dir,
         }
     }
@@ -275,7 +282,23 @@ pub fn create_run(output_root: &Path, video_root: &Path, video_name: &str) -> Re
     let absolute_path = std::fs::canonicalize(&full_path).unwrap_or(full_path);
     let absolute_path_str = absolute_path.to_string_lossy();
 
-    let run_context = RunContext::new(&absolute_path_str, stem, output_dir);
+    // Extract metadata from video
+    let mut total_frames = 0;
+    let mut fps = 0.0;
+
+    // We use a temporary capture to extract metadata
+    let capture = opencv::videoio::VideoCapture::from_file(
+        &absolute_path_str,
+        opencv::videoio::CAP_AVFOUNDATION,
+    )?;
+    if capture.is_opened()? {
+        total_frames = capture.get(opencv::videoio::CAP_PROP_FRAME_COUNT)? as usize;
+        fps = capture.get(opencv::videoio::CAP_PROP_FPS)?;
+    }
+
+    let mut run_context = RunContext::new(&absolute_path_str, stem, output_dir);
+    run_context.total_frames = total_frames;
+    run_context.fps = fps;
     run_context.save()?;
 
     Ok(run_context)

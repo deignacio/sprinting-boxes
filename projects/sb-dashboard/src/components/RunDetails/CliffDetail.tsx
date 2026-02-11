@@ -440,30 +440,6 @@ export default function CliffDetail({
                   marginBottom: "4px",
                 }}
               >
-                Time Offset (sec)
-              </label>
-              <input
-                type="number"
-                step="0.1"
-                value={localSettings.time_offset_secs}
-                onChange={(e) =>
-                  setLocalSettings({
-                    ...localSettings,
-                    time_offset_secs: parseFloat(e.target.value) || 0,
-                  })
-                }
-                onBlur={() => onUpdateSettings(localSettings)}
-              />
-            </div>
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "0.75rem",
-                  color: "#94a3b8",
-                  marginBottom: "4px",
-                }}
-              >
                 Video Start Time
               </label>
               <input

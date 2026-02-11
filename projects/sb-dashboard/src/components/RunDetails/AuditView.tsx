@@ -17,7 +17,6 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
     dark_team_name: "Dark",
     initial_score_light: 0,
     initial_score_dark: 0,
-    time_offset_secs: 0.0,
     video_start_time: "00:00:00",
   });
   const [localSettings, setLocalSettings] = useState(settings);
@@ -327,51 +326,160 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
         >
           Exports
         </h4>
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button
-            onClick={async () => {
-              try {
-                const response = await fetch(
-                  `/api/runs/${runId}/export/youtube`,
-                );
-                if (response.ok) {
-                  const text = await response.text();
-                  await navigator.clipboard.writeText(text);
-                  alert("YouTube chapters copied to clipboard!");
-                } else {
-                  alert("Failed to generate export.");
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <span
+              style={{ color: "#94a3b8", width: "180px", fontSize: "0.85rem" }}
+            >
+              YouTube Chapters:
+            </span>
+            <button
+              onClick={async () => {
+                try {
+                  const response = await fetch(
+                    `/api/runs/${runId}/export/youtube`,
+                  );
+                  if (response.ok) {
+                    const text = await response.text();
+                    await navigator.clipboard.writeText(text);
+                    alert("YouTube chapters copied to clipboard!");
+                  } else {
+                    alert("Failed to generate export.");
+                  }
+                } catch (err) {
+                  console.error(err);
+                  alert("Error exporting chapters.");
                 }
-              } catch (err) {
-                console.error(err);
-                alert("Error exporting chapters.");
-              }
-            }}
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#3b82f6",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              📋 Copy
+            </button>
+            <button
+              onClick={async () => {
+                window.open(`/api/runs/${runId}/export/youtube`, "_blank");
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#0f172a",
+                color: "#94a3b8",
+                border: "1px solid #334155",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              ⬇️ Download
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <span
+              style={{ color: "#94a3b8", width: "180px", fontSize: "0.85rem" }}
+            >
+              Insta360 Studio Clips:
+            </span>
+            <button
+              onClick={async () => {
+                try {
+                  const response = await fetch(
+                    `/api/runs/${runId}/export/studio-clips`,
+                  );
+                  if (response.ok) {
+                    const text = await response.text();
+                    await navigator.clipboard.writeText(text);
+                    alert("Studio Clips XML copied to clipboard!");
+                  } else {
+                    alert("Failed to generate export.");
+                  }
+                } catch (err) {
+                  console.error(err);
+                  alert("Error exporting clips.");
+                }
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#8b5cf6",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              📋 Copy XML
+            </button>
+            <button
+              onClick={async () => {
+                window.open(`/api/runs/${runId}/export/studio-clips`, "_blank");
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#0f172a",
+                color: "#94a3b8",
+                border: "1px solid #334155",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              ⬇️ Download XML
+            </button>
+          </div>
+
+          <div
             style={{
-              padding: "8px 16px",
-              background: "#3b82f6",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-              cursor: "pointer",
+              marginTop: "8px",
+              paddingTop: "16px",
+              borderTop: "1px solid #334155",
+              display: "flex",
+              gap: "12px",
+              alignItems: "center",
             }}
           >
-            📋 Copy YouTube Chapters
-          </button>
-          <button
-            onClick={async () => {
-              window.open(`/api/runs/${runId}/export/youtube`, "_blank");
-            }}
-            style={{
-              padding: "8px 16px",
-              background: "#0f172a",
-              color: "#94a3b8",
-              border: "1px solid #334155",
-              borderRadius: "4px",
-              cursor: "pointer",
-            }}
-          >
-            ⬇️ Download
-          </button>
+            <span
+              style={{ color: "#94a3b8", width: "180px", fontSize: "0.85rem" }}
+            >
+              Troubleshooting:
+            </span>
+            <button
+              onClick={async () => {
+                try {
+                  const response = await fetch(
+                    `/api/runs/${runId}/metadata/backfill`,
+                    { method: "POST" },
+                  );
+                  if (response.ok) {
+                    alert("Metadata backfilled successfully!");
+                  } else {
+                    alert("Failed to backfill metadata.");
+                  }
+                } catch (err) {
+                  console.error(err);
+                  alert("Error backfilling metadata.");
+                }
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#475569",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              ⚙️ Backfill Metadata
+            </button>
+          </div>
         </div>
       </div>
 

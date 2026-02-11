@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use opencv::prelude::*;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -423,4 +424,60 @@ pub async fn processing_progress_sse_handler(
             .interval(Duration::from_secs(1))
             .text("keep-alive"),
     )
+}
+
+/// Handler for POST /api/runs/:id/metadata/backfill
+/// Attempts to extract total_frames and fps from the source video using OpenCV
+/// and updates the RunContext if metadata is missing.
+pub async fn backfill_metadata_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunContext>, axum::http::StatusCode> {
+    let output_root = std::path::Path::new(&args.output_root);
+    let video_root = std::path::Path::new(&args.video_root);
+
+    let runs = list_runs(output_root).map_err(|e| {
+        tracing::error!("Failed to list runs: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let (_, mut run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    // Resolve video path (Logic from create_run)
+    let full_path = video_root.join(&run_context.original_name);
+    let absolute_path = std::fs::canonicalize(&full_path).unwrap_or(full_path);
+    let absolute_path_str = absolute_path.to_string_lossy();
+
+    // Extract metadata from video
+    let capture = opencv::videoio::VideoCapture::from_file(
+        &absolute_path_str,
+        opencv::videoio::CAP_AVFOUNDATION,
+    )
+    .map_err(|e| {
+        tracing::error!("Failed to open video for backfill: {}", e);
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if capture.is_opened().unwrap_or(false) {
+        let total_frames = capture
+            .get(opencv::videoio::CAP_PROP_FRAME_COUNT)
+            .unwrap_or(0.0) as usize;
+        let fps = capture.get(opencv::videoio::CAP_PROP_FPS).unwrap_or(0.0);
+
+        if total_frames > 0 && fps > 0.0 {
+            run_context.total_frames = total_frames;
+            run_context.fps = fps;
+            run_context.save().map_err(|e| {
+                tracing::error!("Failed to save run context after backfill: {}", e);
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            return Ok(Json(run_context));
+        }
+    }
+
+    tracing::error!("Failed to extract valid metadata for run {}", run_id);
+    Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
 }

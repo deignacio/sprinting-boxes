@@ -190,9 +190,12 @@ impl CliffDetectorState {
             return results;
         }
 
-        for i in self.finalized_count..end_idx {
-            let frame_idx = keys[i];
-
+        for (i, &frame_idx) in keys
+            .iter()
+            .enumerate()
+            .take(end_idx)
+            .skip(self.finalized_count)
+        {
             // Check if this frame is a cliff start
             let is_cliff = self.detector.is_cliff_at(&all_probs, i);
 

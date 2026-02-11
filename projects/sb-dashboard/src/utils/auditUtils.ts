@@ -21,7 +21,6 @@ export interface AuditSettings {
   dark_team_name: string;
   initial_score_light: number;
   initial_score_dark: number;
-  time_offset_secs: number;
   video_start_time: string;
 }
 

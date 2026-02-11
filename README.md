@@ -38,7 +38,7 @@ Sprinting Boxes is a project designed for video analysis and tracking, specifica
 - Displays overall progress, throughput information
 - Includes worker / threadpool performance to help with tuning
 - Displays the last 10 frames processed
-- Once the whole video is processed and confirmed, can export results as youtube chapters and other formats
+- Once the whole video is processed and confirmed, can export results as YouTube chapters, Insta360 Studio Clips XML, and other formats
 
 
 ## License

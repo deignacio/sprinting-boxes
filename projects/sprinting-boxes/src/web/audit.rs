@@ -1,8 +1,10 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
+use chrono;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -34,7 +36,6 @@ pub struct AuditSettings {
     pub dark_team_name: String,
     pub initial_score_light: i32,
     pub initial_score_dark: i32,
-    pub time_offset_secs: f64,
     pub video_start_time: String,
 }
 
@@ -45,7 +46,6 @@ impl Default for AuditSettings {
             dark_team_name: "Team B".to_string(),
             initial_score_light: 0,
             initial_score_dark: 0,
-            time_offset_secs: 0.0,
             video_start_time: "00:00:00".to_string(),
         }
     }
@@ -74,7 +74,7 @@ fn load_or_init_audit_state(
         fs::read_to_string(&points_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Sample rate from run context (fallback to 30.0 if invalid/zero, though unlikely)
-    let fps = if run_context.sample_rate > 0.0 {
+    let sample_rate = if run_context.sample_rate > 0.0 {
         run_context.sample_rate
     } else {
         30.0
@@ -96,7 +96,7 @@ fn load_or_init_audit_state(
 
         cliffs.push(CliffData {
             frame_index,
-            timestamp: format_timestamp(frame_index, fps, 0.0),
+            timestamp: format_timestamp(frame_index, sample_rate, 0.0),
             left_emptied_first,
             right_emptied_first,
             maybe_false_positive: !left_emptied_first && !right_emptied_first,
@@ -140,7 +140,7 @@ fn load_or_init_audit_state(
         merged_cliffs.sort_by_key(|c| c.frame_index);
 
         // Always recalculate timestamps and scores on load to ensure sync with current settings
-        let final_cliffs = recalculate_audit(&merged_cliffs, &audit_state.settings, fps);
+        let final_cliffs = recalculate_audit(&merged_cliffs, &audit_state.settings, sample_rate);
 
         Ok(AuditState {
             cliffs: final_cliffs,
@@ -153,7 +153,7 @@ fn load_or_init_audit_state(
             ..AuditSettings::default()
         };
         Ok(AuditState {
-            cliffs: recalculate_audit(&cliffs, &settings, fps),
+            cliffs: recalculate_audit(&cliffs, &settings, sample_rate),
             settings,
         })
     }
@@ -174,14 +174,15 @@ pub async fn get_cliffs_handler(
     let audit_state = load_or_init_audit_state(&run_context)?;
 
     // Sample rate (default 30.0)
-    let fps = if run_context.sample_rate > 0.0 {
+    let sample_rate = if run_context.sample_rate > 0.0 {
         run_context.sample_rate
     } else {
         30.0
     };
 
     // Recalculate scores and breaks
-    let enriched_cliffs = recalculate_audit(&audit_state.cliffs, &audit_state.settings, fps);
+    let enriched_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
 
     Ok(Json(AuditState {
         cliffs: enriched_cliffs,
@@ -205,13 +206,14 @@ pub async fn save_audit_handler(
     let audit_path = output_dir.join("audit.json");
 
     // Sample rate (default 30.0)
-    let fps = if run_context.sample_rate > 0.0 {
+    let sample_rate = if run_context.sample_rate > 0.0 {
         run_context.sample_rate
     } else {
         30.0
     };
 
-    let enriched_cliffs = recalculate_audit(&audit_state.cliffs, &audit_state.settings, fps);
+    let enriched_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
     let enriched_state = AuditState {
         cliffs: enriched_cliffs,
         settings: audit_state.settings,
@@ -242,14 +244,15 @@ pub async fn update_audit_settings_handler(
     let mut audit_state = load_or_init_audit_state(&run_context)?;
 
     // Sample rate (default 30.0)
-    let fps = if run_context.sample_rate > 0.0 {
+    let sample_rate = if run_context.sample_rate > 0.0 {
         run_context.sample_rate
     } else {
         30.0
     };
 
     audit_state.settings = settings;
-    let enriched_cliffs = recalculate_audit(&audit_state.cliffs, &audit_state.settings, fps);
+    let enriched_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
     audit_state.cliffs = enriched_cliffs;
 
     let json = serde_json::to_string_pretty(&audit_state)
@@ -332,13 +335,14 @@ pub async fn update_cliff_field_handler(
     }
 
     // Sample rate (default 30.0)
-    let fps = if run_context.sample_rate > 0.0 {
+    let sample_rate = if run_context.sample_rate > 0.0 {
         run_context.sample_rate
     } else {
         30.0
     };
 
-    let enriched_cliffs = recalculate_audit(&audit_state.cliffs, &audit_state.settings, fps);
+    let enriched_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
     audit_state.cliffs = enriched_cliffs;
 
     let json = serde_json::to_string_pretty(&audit_state)
@@ -348,8 +352,8 @@ pub async fn update_cliff_field_handler(
     Ok(StatusCode::OK)
 }
 
-fn format_timestamp(frame_index: usize, fps: f64, offset_secs: f64) -> String {
-    let total_secs = (frame_index as f64 / fps) + offset_secs;
+fn format_timestamp(frame_index: usize, sample_rate: f64, offset_secs: f64) -> String {
+    let total_secs = (frame_index as f64 / sample_rate) + offset_secs;
     let hours = (total_secs / 3600.0) as usize;
     let minutes = ((total_secs % 3600.0) / 60.0) as usize;
     let seconds = (total_secs % 60.0) as usize;
@@ -367,7 +371,11 @@ fn parse_duration_to_secs(duration: &str) -> f64 {
     (h * 3600.0) + (m * 60.0) + s
 }
 
-fn recalculate_audit(cliffs: &[CliffData], settings: &AuditSettings, fps: f64) -> Vec<CliffData> {
+fn recalculate_audit(
+    cliffs: &[CliffData],
+    settings: &AuditSettings,
+    sample_rate: f64,
+) -> Vec<CliffData> {
     if cliffs.is_empty() {
         return Vec::new();
     }
@@ -384,11 +392,10 @@ fn recalculate_audit(cliffs: &[CliffData], settings: &AuditSettings, fps: f64) -
     for (i, cliff) in sorted_cliffs.iter().enumerate() {
         let is_fp = cliff.status == "FalsePositive";
 
-        let total_offset =
-            settings.time_offset_secs + parse_duration_to_secs(&settings.video_start_time);
+        let total_offset = parse_duration_to_secs(&settings.video_start_time);
         if is_fp {
             result.push(CliffData {
-                timestamp: format_timestamp(cliff.frame_index, fps, total_offset),
+                timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
                 left_team_color: None,
                 right_team_color: None,
                 score_light,
@@ -453,7 +460,7 @@ fn recalculate_audit(cliffs: &[CliffData], settings: &AuditSettings, fps: f64) -
         }
 
         result.push(CliffData {
-            timestamp: format_timestamp(cliff.frame_index, fps, total_offset),
+            timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
             left_team_color: Some(left),
             right_team_color: Some(right),
             score_light,
@@ -633,15 +640,15 @@ pub async fn get_youtube_chapters_handler(
     let audit_state = load_or_init_audit_state(&run_context)?;
 
     // Sample rate (default 30.0)
-    let fps = if run_context.sample_rate > 0.0 {
+    let sample_rate = if run_context.sample_rate > 0.0 {
         run_context.sample_rate
     } else {
-        30.0
+        1.0
     };
-    let offset = audit_state.settings.time_offset_secs
-        + parse_duration_to_secs(&audit_state.settings.video_start_time);
+    let offset = parse_duration_to_secs(&audit_state.settings.video_start_time);
 
-    let enriched_cliffs = recalculate_audit(&audit_state.cliffs, &audit_state.settings, fps);
+    let enriched_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
     let mut chapters = String::new();
 
     // Always start with 00:00
@@ -652,54 +659,215 @@ pub async fn get_youtube_chapters_handler(
             continue;
         }
 
-        let timestamp = format_timestamp(cliff.frame_index, fps, offset);
-
-        let mut chapter_line = format!("{} Point {}", timestamp, i + 1);
-
-        // Determine pulling team name
-        let pull_side = cliff
-            .manual_side_override
-            .as_deref()
-            .or(if cliff.left_emptied_first {
-                Some("left")
-            } else if cliff.right_emptied_first {
-                Some("right")
-            } else {
-                None
-            });
-
-        if let Some(side) = pull_side {
-            let team_color = if side == "left" {
-                cliff.left_team_color.as_deref().unwrap_or("light")
-            } else {
-                cliff.right_team_color.as_deref().unwrap_or("dark")
-            };
-
-            let team_name = if team_color == "light" {
-                &audit_state.settings.light_team_name
-            } else {
-                &audit_state.settings.dark_team_name
-            };
-
-            chapter_line.push_str(&format!(" - {} Pull", team_name));
-        }
-
-        if cliff.is_break {
-            chapter_line.push_str(" 🔥 Break");
-        }
-
-        // Add Score info
-        chapter_line.push_str(&format!(
-            " ({} {} - {} {})",
-            &audit_state.settings.light_team_name,
-            cliff.score_light,
-            &audit_state.settings.dark_team_name,
-            cliff.score_dark
-        ));
-
-        chapters.push_str(&chapter_line);
-        chapters.push('\n');
+        let timestamp = format_timestamp(cliff.frame_index, sample_rate, offset);
+        let description = get_point_description(cliff, i + 1, &audit_state.settings);
+        chapters.push_str(&format!("{} {}\n", timestamp, description));
     }
 
     Ok(chapters)
+}
+
+/// Generates a human-readable description for a point, including team names, score, and whether it was a break.
+/// This format is used for both YouTube chapters and Insta360 Studio Clips.
+fn get_point_description(
+    cliff: &CliffData,
+    point_index: usize,
+    settings: &AuditSettings,
+) -> String {
+    let mut description = format!("Point {}", point_index);
+
+    let pull_side = cliff
+        .manual_side_override
+        .as_deref()
+        .or(if cliff.left_emptied_first {
+            Some("left")
+        } else if cliff.right_emptied_first {
+            Some("right")
+        } else {
+            None
+        });
+
+    if let Some(side) = pull_side {
+        let team_color = if side == "left" {
+            cliff.left_team_color.as_deref().unwrap_or("light")
+        } else {
+            cliff.right_team_color.as_deref().unwrap_or("dark")
+        };
+
+        let team_name = if team_color == "light" {
+            &settings.light_team_name
+        } else {
+            &settings.dark_team_name
+        };
+
+        description.push_str(&format!(" - {} Pull", team_name));
+    }
+
+    if cliff.is_break {
+        description.push_str(" 🔥 Break");
+    }
+
+    description.push_str(&format!(
+        " ({} {} - {} {})",
+        &settings.light_team_name, cliff.score_light, &settings.dark_team_name, cliff.score_dark
+    ));
+
+    description
+}
+
+/// Handler for GET /api/runs/:id/export/studio-clips
+/// Generates an XML file compatible with Insta360 Studio's project/scheme system.
+pub async fn get_studio_clips_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let runs = list_runs(std::path::Path::new(&args.output_root))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (_, run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let audit_state = load_or_init_audit_state(&run_context)?;
+
+    // Use stored metadata
+    let total_frames = run_context.total_frames;
+    let sample_rate = if run_context.sample_rate > 0.0 {
+        run_context.sample_rate
+    } else {
+        1.0
+    };
+    let video_fps = run_context.fps;
+    let offset = parse_duration_to_secs(&audit_state.settings.video_start_time);
+    let total_duration_ms = (((total_frames as f64 / video_fps) + offset) * 1000.0) as u64;
+
+    let now = chrono::Utc::now();
+    let utc_now = now.format("%Y.%m.%d %H:%M:%S%.3f").to_string();
+    let utc_now_ms = now.timestamp_millis();
+
+    let confirmed_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate)
+            .into_iter()
+            .filter(|c| c.status == "Confirmed")
+            .collect::<Vec<_>>();
+
+    let mut point_clips = Vec::new();
+    for (i, cliff) in confirmed_cliffs.iter().enumerate() {
+        let start_ms = (((cliff.frame_index as f64 / sample_rate) + offset) * 1000.0) as u64;
+        let end_ms = if let Some(next) = confirmed_cliffs.get(i + 1) {
+            (((next.frame_index as f64 / sample_rate) + offset) * 1000.0) as u64
+        } else {
+            total_duration_ms
+        };
+        let description = get_point_description(cliff, i + 1, &audit_state.settings);
+        point_clips.push((description, start_ms, end_ms));
+    }
+
+    let default_name = if let Some((last_desc, _, _)) = point_clips.last() {
+        last_desc.clone()
+    } else {
+        "Warm-ups".to_string()
+    };
+
+    let escaped_default = default_name
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;");
+
+    let mut xml = format!(
+        r#"<schemes default="{}">
+"#,
+        escaped_default
+    );
+
+    // 1. Warm-ups clip
+    let first_point_ms = if let Some(first) = confirmed_cliffs.first() {
+        (((first.frame_index as f64 / sample_rate) + offset) * 1000.0) as u64
+    } else {
+        total_duration_ms
+    };
+
+    xml.push_str(&render_scheme(
+        "Warm-ups",
+        0,
+        first_point_ms,
+        total_duration_ms,
+        &utc_now,
+        utc_now_ms,
+    ));
+
+    // 2. Point clips
+    for (description, start_ms, end_ms) in point_clips {
+        xml.push_str(&render_scheme(
+            &description,
+            start_ms,
+            end_ms,
+            total_duration_ms,
+            &utc_now,
+            utc_now_ms,
+        ));
+    }
+
+    xml.push_str("</schemes>\n");
+
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/xml")
+        .body(axum::body::Body::from(xml))
+        .unwrap())
+}
+
+fn render_scheme(
+    id: &str,
+    start_ms: u64,
+    end_ms: u64,
+    total_ms: u64,
+    utc_now: &str,
+    utc_now_ms: i64,
+) -> String {
+    let escaped_id = id
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;");
+
+    format!(
+        r#"    <scheme app_data_id="" app_data_mode="" app_data_ratio="" app_data_source="" app_data_types="" creation="{}" has_deeptrack_user_added="0" has_deeptrack_user_edited="0" has_headtrack_keyframe_user_added="0" has_headtrack_keyframe_user_edited="0" has_keyframe_user_added="0" has_keyframe_user_edited="0" id="{}" last_edit_time="{}" load_hight_data="0">
+        <preference duration="{}" favourite="0" last_trim_edit_time="{}" ratio_height="9" ratio_width="16" shell_corrected="0" trim_end="{}" trim_start="{}">
+            <bullet_time distance="0.8125" fov="1.0421360963658142"/>
+            <rendering accessory="0" ai_raw="0" alpha="0" blend_angle="0" camera_movement="0" cold_shoe="0" cooling_shell="0" deversion="3.5" dewarp="0" dewarp_mode="0" directional_lock="1" distance="0" fov="1.6580628156661987" handle_pano_fpv="0" head_tracking="0" immersion_stab="0" input_data_type="0" motion_blur="0" pano_fpv="0" pano_fpv_horizontal_on="0" pitch="0" projection="64" propeller_guard_on="0" roll="0" rotate_angle="0" stab_direction="0" stab_level="0" stab_type="0" stabilization="1" stabilizer_type_edited="1" use_custom_transform_params="0" yaw="0">
+                <play_rate/>
+            </rendering>
+            <audio denoise_type="0" volume="0.5"/>
+            <optimization>
+                <calibration offset=""/>
+                <stitching ai_stitch="0" audio_mixing="0" audio_mixing_weight="0" audio_mode="9" audio_tracks_default_delay="-2147483648" audio_tracks_delay="-2147483648" beauty_mode="0" color_adjust="1" color_blackpoint_strength="0" color_brightness_strength="0" color_contrast_strength="0" color_definition_strength="0" color_enhancement="0" color_exposure_strength="0" color_highlights_strength="0" color_plus_strength="30" color_saturation_strength="0" color_shadows_strength="0" color_tint_strength="0" color_vibrance_strength="0" color_warmth_strength="0" de_version="3.5" direct_focus="0" dynamic_stitching="0" fade_in_duration_s="5" fade_out_duration_s="3" horizontal_correct="0" horizontal_correct_angle="0" horizontal_correct_default_angle="0" image_fusion="1" is_selfie="0" keyframe_duration_s="5" local_tone_mapping="0" ltm_strength="30" lut="0" motion_blur_edited="0" motion_blur_strength="50" motion_blur_threshold="85" optical_flow_stitching="1" stab_input_data_type="0" templete_stitching="0" under_water_correction="0" under_water_strength="100" under_water_style="0"/>
+            </optimization>
+            <logo enable_logo="0" enable_time_logo="0" logo_corner_radius="0" logo_feather="0" logo_location="0" logo_rotate="0" logo_size="0.30000001" selected_logo="/panels/none" time_logo_format="1" time_logo_transparency="100"/>
+        </preference>
+        <timeline app_import_id="" duration_ms="{}">
+            <recording>
+                <keyframes/>
+                <transitions/>
+                <headtrackareas/>
+                <deep_track_areas/>
+            </recording>
+            <camera_movement_track/>
+        </timeline>
+        <dashboard_setting cloud_media="0" cloud_style="" dashboard_datasource_visible="1" dashboard_group_id="" dashboard_group_type="0" dashboard_group_use="1" dashboard_handled="0" dashboard_visible="0"/>
+        <pano_animation>
+            <configs>
+                <config duration="20000" id="1" trim_end="20000" trim_start="0"/>
+                <config duration="25000" id="2" trim_end="25000" trim_start="0"/>
+                <config duration="20000" id="3" trim_end="20000" trim_start="0"/>
+                <config duration="15000" id="4" trim_end="15000" trim_start="0"/>
+                <config duration="20000" id="5" trim_end="20000" trim_start="0"/>
+            </configs>
+        </pano_animation>
+    </scheme>
+"#,
+        utc_now, escaped_id, utc_now, total_ms, utc_now_ms, end_ms, start_ms, total_ms
+    )
 }

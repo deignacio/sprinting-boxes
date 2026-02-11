@@ -267,7 +267,9 @@ pub fn scale_workers(run_id: &str, stage: &str, delta: i32) -> Option<usize> {
 
         let current_target = target_atomic.load(Ordering::Relaxed);
         let new_target = if delta < 0 {
-            current_target.saturating_sub(delta.abs() as usize).max(1)
+            current_target
+                .saturating_sub(delta.unsigned_abs() as usize)
+                .max(1)
         } else {
             current_target + (delta as usize)
         };
