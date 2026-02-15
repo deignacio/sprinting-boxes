@@ -41,6 +41,72 @@ Sprinting Boxes is a project designed for video analysis and tracking, specifica
 - Once the whole video is processed and confirmed, can export results as YouTube chapters, Insta360 Studio Clips XML, and other formats
 
 
+## Getting Started
+
+Follow these instructions to set up the project from a fresh macOS installation.
+
+### Prerequisites
+
+1.  **Install Homebrew** (if not already installed):
+    ```bash
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    ```
+
+2.  **Install System Dependencies**:
+    We need `opencv` (for video processing) and `pkg-config` (to help Rust find it).
+    ```bash
+    brew install opencv pkg-config
+    ```
+
+3.  **Install Node.js & npm** (via nvm):
+    We recommend using [nvm](https://github.com/nvm-sh/nvm) to manage Node versions.
+    ```bash
+    # Install nvm
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    
+    # Reload shell configuration (or restart terminal)
+    source ~/.zshrc  # or ~/.bash_profile
+    
+    # Install latest LTS Node.js version
+    nvm install --lts
+    nvm use --lts
+    ```
+
+4.  **Install Rust**:
+    If you haven't already:
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    or
+    ```bash
+    brew install rust
+    ```
+
+
+### Configuration
+
+1.  **Environment Variables**:
+    Copy the example configuration file:
+    ```bash
+    cp .env.example .env
+    ```
+    
+    **Edit `.env`** and specify the required paths:
+    -   `SPRINTING_BOXES_VIDEO_ROOT`: Absolute path to your video files directory.
+    -   `SPRINTING_BOXES_OUTPUT_ROOT`: Absolute path where analysis results will be saved.
+
+### Running the Application
+
+This project consists of a Rust backend and a React frontend.
+
+#### Start the Application
+This compiles the Rust backend, builds the frontend assets automatically, and starts the server.
+```bash
+# In the repository root
+cargo run -p sprinting-boxes
+```
+*The server typically runs on port `12206`, and the dashboard is embedded.*
+
 ## License
 
 See the [LICENSE](LICENSE) file for details.
