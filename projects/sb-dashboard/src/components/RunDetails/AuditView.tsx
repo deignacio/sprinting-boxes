@@ -435,6 +435,73 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
             </button>
           </div>
 
+          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+            <span
+              style={{ color: "#94a3b8", width: "180px", fontSize: "0.85rem" }}
+            >
+              VLC Playlist (.m3u):
+            </span>
+            <button
+              onClick={async () => {
+                try {
+                  const response = await fetch(
+                    `/api/runs/${runId}/export/vlc-playlist`,
+                  );
+                  if (response.ok) {
+                    const text = await response.text();
+                    await navigator.clipboard.writeText(text);
+                    alert("VLC Playlist copied to clipboard!");
+                  } else {
+                    alert("Failed to generate export.");
+                  }
+                } catch (err) {
+                  console.error(err);
+                  alert("Error exporting playlist.");
+                }
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#f97316", // Orange-500
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              📋 Copy
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  const response = await fetch(
+                    `/api/runs/${runId}/export/vlc-playlist`,
+                    { method: "POST" },
+                  );
+                  if (response.ok) {
+                    alert("Playlist saved to run output directory!");
+                  } else {
+                    alert("Failed to save playlist.");
+                  }
+                } catch (err) {
+                  console.error(err);
+                  alert("Error saving playlist.");
+                }
+              }}
+              style={{
+                padding: "8px 16px",
+                background: "#0f172a",
+                color: "#94a3b8",
+                border: "1px solid #334155",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "0.85rem",
+              }}
+            >
+              💾 Save to Disk
+            </button>
+          </div>
+
           <div
             style={{
               marginTop: "8px",

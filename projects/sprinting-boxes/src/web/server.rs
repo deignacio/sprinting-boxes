@@ -9,9 +9,9 @@ use crate::web::api::{
 };
 use crate::web::assets::{index_handler, static_handler};
 use crate::web::audit::{
-    get_cliffs_handler, get_features_handler, get_studio_clips_handler,
-    get_youtube_chapters_handler, save_audit_handler, serve_run_crop_handler,
-    update_audit_settings_handler, update_cliff_field_handler,
+    get_cliffs_handler, get_features_handler, get_studio_clips_handler, get_vlc_playlist_handler,
+    get_youtube_chapters_handler, save_audit_handler, save_vlc_playlist_handler,
+    serve_run_crop_handler, update_audit_settings_handler, update_cliff_field_handler,
 };
 use anyhow::Result;
 use axum::{
@@ -114,6 +114,10 @@ pub async fn run_server(args: Args) -> Result<()> {
         .route(
             "/api/runs/:id/export/studio-clips",
             get(get_studio_clips_handler),
+        )
+        .route(
+            "/api/runs/:id/export/vlc-playlist",
+            get(get_vlc_playlist_handler).post(save_vlc_playlist_handler),
         )
         .route("/api/runs/:id/crops/:filename", get(serve_run_crop_handler))
         .route("/", get(index_handler))

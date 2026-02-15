@@ -871,3 +871,89 @@ fn render_scheme(
         utc_now, escaped_id, utc_now, total_ms, utc_now_ms, end_ms, start_ms, total_ms
     )
 }
+
+/// Helper to generate M3U playlist content
+fn generate_vlc_playlist(args: &Args, run_id: &str) -> Result<String, StatusCode> {
+    let output_root = std::path::Path::new(&args.output_root);
+    let runs = list_runs(output_root).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (_, run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == run_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let audit_state = load_or_init_audit_state(&run_context)?;
+
+    // Resolve absolute video path
+    let video_root = std::path::Path::new(&args.video_root);
+    let video_path = run_context.resolve_video_path(video_root);
+    let video_path_str = video_path.to_string_lossy();
+
+    // Sample rate (default 30.0)
+    let sample_rate = if run_context.sample_rate > 0.0 {
+        run_context.sample_rate
+    } else {
+        1.0
+    };
+    let offset = parse_duration_to_secs(&audit_state.settings.video_start_time);
+
+    // Total duration in seconds for the last segment
+    let total_frames = run_context.total_frames;
+    let video_fps = run_context.fps;
+    let total_duration_secs = (total_frames as f64 / video_fps) + offset;
+
+    let confirmed_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate)
+            .into_iter()
+            .filter(|c| c.status == "Confirmed")
+            .collect::<Vec<_>>();
+
+    let mut m3u = String::from("#EXTM3U\n");
+
+    for (i, cliff) in confirmed_cliffs.iter().enumerate() {
+        let start_time = (cliff.frame_index as f64 / sample_rate) + offset;
+
+        let stop_time = if let Some(next) = confirmed_cliffs.get(i + 1) {
+            (next.frame_index as f64 / sample_rate) + offset
+        } else {
+            total_duration_secs
+        };
+
+        let duration = stop_time - start_time;
+        let description = get_point_description(cliff, i + 1, &audit_state.settings);
+
+        m3u.push_str(&format!("#EXTVLCOPT:start-time={:.3}\n", start_time));
+        m3u.push_str(&format!("#EXTVLCOPT:stop-time={:.3}\n", stop_time));
+        m3u.push_str(&format!("#EXTINF:{},{}\n", duration as u64, description));
+        m3u.push_str(&format!("{}\n", video_path_str));
+    }
+
+    Ok(m3u)
+}
+
+/// Handler for GET /api/runs/:id/export/vlc-playlist
+pub async fn get_vlc_playlist_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<String, StatusCode> {
+    generate_vlc_playlist(&args, &run_id)
+}
+
+/// Handler for POST /api/runs/:id/export/vlc-playlist
+pub async fn save_vlc_playlist_handler(
+    State(args): State<Arc<Args>>,
+    Path(run_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let playlist = generate_vlc_playlist(&args, &run_id)?;
+
+    let output_root = std::path::Path::new(&args.output_root);
+    let runs = list_runs(output_root).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (_, run_context) = runs
+        .into_iter()
+        .find(|(id, _)| id == &run_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let output_path = run_context.output_dir.join("playlist.m3u");
+    fs::write(output_path, playlist).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(StatusCode::OK)
+}
