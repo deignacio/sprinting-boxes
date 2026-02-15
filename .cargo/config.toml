@@ -1,0 +1,5 @@
+# Cargo Configuration
+
+[env]
+LIBCLANG_PATH = "/Library/Developer/CommandLineTools/usr/lib"
+DYLD_LIBRARY_PATH = "/Library/Developer/CommandLineTools/usr/lib"
