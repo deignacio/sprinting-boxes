@@ -20,7 +20,7 @@ Sprinting Boxes is a project designed for video analysis and tracking, specifica
 
 ### Video processing pipeline
 
- - Using OpenCV, extract frames from the video file
+ - Using OpenCV or FFmpeg (VideoToolbox), extract frames from the video file
  - Extract crops for the end zones (and maybe the field)
  - Run object detection on the crops, using a SAHI tactic to deal with really small players
 
@@ -53,9 +53,9 @@ Follow these instructions to set up the project from a fresh macOS installation.
     ```
 
 2.  **Install System Dependencies**:
-    We need `opencv` (for video processing) and `pkg-config` (to help Rust find it).
+    We need `opencv` and `ffmpeg` (for video processing) and `pkg-config` (to help Rust find them).
     ```bash
-    brew install opencv pkg-config
+    brew install opencv ffmpeg pkg-config
     ```
 
 3.  **Install Node.js & npm** (via nvm):

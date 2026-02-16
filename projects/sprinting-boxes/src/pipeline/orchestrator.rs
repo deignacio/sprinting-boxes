@@ -5,6 +5,7 @@
 
 pub use crate::pipeline::types::ProcessingState;
 use crate::run_context::RunContext;
+use crate::video::ffmpeg_reader::FfmpegReader;
 use crate::video::opencv_reader::OpencvReader;
 use crate::video::VideoReader;
 use anyhow::{Context, Result};
@@ -73,6 +74,7 @@ pub fn start_processing(
     run_context: &RunContext,
     video_root: &Path,
     model_path: &str,
+    backend: &str,
 ) -> Result<Arc<ProcessingState>> {
     let video_path = run_context.resolve_video_path(video_root);
 
@@ -92,11 +94,19 @@ pub fn start_processing(
         return Err(anyhow::anyhow!("Video file NOT FOUND at: {:?}", video_path));
     }
 
-    // Create reader
+    // Create reader based on selected backend
     let path_str = video_path.to_str().unwrap();
     let sample_rate = run_context.sample_rate;
-    let reader = OpencvReader::new(path_str, sample_rate)
-        .with_context(|| format!("Failed to open video at: '{}'", path_str))?;
+    let reader: Box<dyn VideoReader> = match backend {
+        "ffmpeg" => Box::new(
+            FfmpegReader::new(path_str, sample_rate)
+                .with_context(|| format!("Failed to open video with ffmpeg at: '{}'", path_str))?,
+        ),
+        _ => Box::new(
+            OpencvReader::new(path_str, sample_rate)
+                .with_context(|| format!("Failed to open video at: '{}'", path_str))?,
+        ),
+    };
 
     let total_frames = reader.frame_count()?;
 
@@ -165,7 +175,6 @@ pub fn start_processing(
 
     // Spawn 1: Reader
     thread::spawn(move || {
-        let reader: Box<dyn VideoReader> = Box::new(reader);
         if let Err(e) = crate::pipeline::reader::read_worker(reader, tx_v, state_r) {
             tracing::error!("Reader failed: {}", e);
         }

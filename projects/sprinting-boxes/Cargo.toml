@@ -19,7 +19,7 @@ serde_json = "1.0.128"
 chrono = { version = "0.4.38", features = ["serde"] }
 walkdir = "2.5.0"
 indicatif = "0.17.8"
-opencv = "0.94.1"
+opencv = { version = "0.94.1", features = ["clang-runtime"] }
 crossbeam = "0.8.4"
 lazy_static = "1.5.0"
 async-stream = "0.3.6"
@@ -30,6 +30,7 @@ geo-types = "0.7"
 geo-buffer = "0.1"
 usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "ort-download-binaries", "github", "image-default-formats", "hf-hub"] }
 image = "0.25.9"
+ffmpeg-next = "8.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "ort-download-binaries", "github", "image-default-formats", "coreml", "hf-hub"] }

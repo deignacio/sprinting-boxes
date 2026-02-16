@@ -1,5 +1,7 @@
 # Cargo Configuration
 
 [env]
-LIBCLANG_PATH = "/Library/Developer/CommandLineTools/usr/lib"
-DYLD_LIBRARY_PATH = "/Library/Developer/CommandLineTools/usr/lib"
+LIBCLANG_PATH = "/opt/homebrew/opt/llvm/lib"
+DYLD_LIBRARY_PATH = "/opt/homebrew/opt/llvm/lib"
+# Required for ffmpeg-sys-next bindgen to find FFmpeg headers (Homebrew)
+FFMPEG_DIR = "/opt/homebrew/opt/ffmpeg"

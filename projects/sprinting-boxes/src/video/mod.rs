@@ -1,4 +1,5 @@
 pub mod calibration;
+pub mod ffmpeg_reader;
 pub mod opencv_reader;
 pub mod processor;
 

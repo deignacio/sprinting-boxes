@@ -19,19 +19,24 @@ pub fn read_worker(
 ) -> Result<()> {
     let mut count = 0;
 
-    while let Ok(mat) = reader.next_frame() {
+    loop {
         let start_inst = std::time::Instant::now();
-        if !state.is_active.load(Ordering::Relaxed) {
-            break;
-        }
+        match reader.next_frame() {
+            Ok(mat) => {
+                if !state.is_active.load(Ordering::Relaxed) {
+                    break;
+                }
 
-        if tx.send(RawFrame { id: count, mat }).is_err() {
-            break; // Receiver closed
-        }
+                if tx.send(RawFrame { id: count, mat }).is_err() {
+                    break; // Receiver closed
+                }
 
-        count += 1;
-        let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
-        state.update_stage("reader", count, duration_ms);
+                count += 1;
+                let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
+                state.update_stage("reader", count, duration_ms);
+            }
+            Err(_) => break,
+        }
     }
 
     Ok(())

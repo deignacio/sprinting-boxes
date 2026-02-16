@@ -320,6 +320,16 @@ pub struct UpdateWorkerRequest {
 
 // --- Processing API handlers ---
 
+#[derive(serde::Deserialize)]
+pub struct StartProcessingRequest {
+    #[serde(default = "default_backend")]
+    pub backend: String,
+}
+
+fn default_backend() -> String {
+    "opencv".to_string()
+}
+
 pub async fn update_worker_count_handler(
     Path(run_id): Path<String>,
     Json(payload): Json<UpdateWorkerRequest>,
@@ -336,7 +346,12 @@ pub async fn update_worker_count_handler(
 pub async fn start_processing_handler(
     State(args): State<Arc<Args>>,
     Path(run_id): Path<String>,
+    body: Option<Json<StartProcessingRequest>>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let backend = body
+        .map(|Json(b)| b.backend)
+        .unwrap_or_else(|| "opencv".to_string());
+
     let output_root = std::path::Path::new(&args.output_root);
     let video_root = std::path::Path::new(&args.video_root);
 
@@ -361,6 +376,7 @@ pub async fn start_processing_handler(
         &run_context,
         video_root,
         &args.model_path,
+        &backend,
     ) {
         Ok(state) => Ok(Json(state.to_progress_json())),
         Err(e) => {

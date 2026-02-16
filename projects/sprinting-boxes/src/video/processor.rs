@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::video::{opencv_reader::OpencvReader, VideoReader};
+use crate::video::{ffmpeg_reader::FfmpegReader, opencv_reader::OpencvReader, VideoReader};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use opencv::core::Mat;
@@ -38,6 +38,7 @@ impl VideoSession {
     pub fn new(video_path: &str, backend: &str, sample_rate: f64) -> Result<Self> {
         let reader: Box<dyn VideoReader> = match backend {
             "opencv" => Box::new(OpencvReader::new(video_path, sample_rate)?),
+            "ffmpeg" => Box::new(FfmpegReader::new(video_path, sample_rate)?),
             _ => {
                 return Err(anyhow::anyhow!(
                     "Unsupported or disabled backend: {}",

@@ -7,7 +7,9 @@ interface ProcessingCardProps {
   isProcessing: boolean;
   processingProgress: ProcessingProgress | null;
   processingError: string | null;
-  handleStartProcessing: () => void;
+  selectedBackend: string;
+  onBackendChange: (backend: string) => void;
+  handleStartProcessing: (backend: string) => void;
   handleStopProcessing: () => void;
   handleUpdateWorkers: (stage: string, delta: number) => void;
 }
@@ -19,6 +21,8 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
   isProcessing,
   processingProgress,
   processingError,
+  selectedBackend,
+  onBackendChange,
   handleStartProcessing,
   handleStopProcessing,
   handleUpdateWorkers,
@@ -81,7 +85,7 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
               {Math.round(
                 ((processingProgress.stages.finalize?.current ?? 0) /
                   (processingProgress.total_frames || 1)) *
-                  100,
+                100,
               )}
               %
             </span>
@@ -99,13 +103,12 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
               style={{
                 background: "linear-gradient(90deg, #34d399, #06b6d4)",
                 height: "100%",
-                width: `${
-                  processingProgress.total_frames > 0
+                width: `${processingProgress.total_frames > 0
                     ? ((processingProgress.stages.finalize?.current ?? 0) /
-                        processingProgress.total_frames) *
-                      100
+                      processingProgress.total_frames) *
+                    100
                     : 0
-                }%`,
+                  }%`,
                 transition: "width 0.3s ease",
               }}
             />
@@ -345,17 +348,44 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
             Stop Processing
           </button>
         ) : (
-          <button
-            onClick={handleStartProcessing}
-            className="btn btn-primary"
-            style={{ width: "100%" }}
-            disabled={processingProgress?.is_complete}
-          >
-            <Play size={18} />
-            {processingProgress?.is_complete
-              ? "Processing Complete"
-              : "Start Processing"}
-          </button>
+          <>
+            {!processingProgress?.is_complete && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: "0.5rem",
+                  marginBottom: "1rem",
+                }}
+              >
+                {["opencv", "ffmpeg"].map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => onBackendChange(b)}
+                    className={`btn btn-sm ${selectedBackend === b ? "btn-primary" : "btn-secondary"
+                      }`}
+                    style={{
+                      flex: 1,
+                      opacity: selectedBackend === b ? 1 : 0.6,
+                      transition: "opacity 0.2s ease",
+                    }}
+                  >
+                    {b === "opencv" ? "OpenCV" : "FFmpeg (video-rs)"}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => handleStartProcessing(selectedBackend)}
+              className="btn btn-primary"
+              style={{ width: "100%" }}
+              disabled={processingProgress?.is_complete}
+            >
+              <Play size={18} />
+              {processingProgress?.is_complete
+                ? "Processing Complete"
+                : "Start Processing"}
+            </button>
+          </>
         )
       ) : (
         <div

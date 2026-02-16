@@ -103,7 +103,7 @@ export const useVideoProcessing = (
     }
   };
 
-  const handleStartProcessing = async () => {
+  const handleStartProcessing = async (backend: string = "opencv") => {
     if (!run) return;
     setProcessingError(null);
 
@@ -121,6 +121,8 @@ export const useVideoProcessing = (
       console.log("Starting processing via API...");
       const response = await fetch(`/api/runs/${run.run_id}/process/start`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backend }),
       });
 
       if (!response.ok) {
