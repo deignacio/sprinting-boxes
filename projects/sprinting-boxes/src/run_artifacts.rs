@@ -6,14 +6,14 @@
 use serde::{Deserialize, Serialize};
 
 /// A 2D point in normalized coordinates [0, 1]
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
 }
 
 /// Normalized bounding box
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BBox {
     pub x: f32,
     pub y: f32,

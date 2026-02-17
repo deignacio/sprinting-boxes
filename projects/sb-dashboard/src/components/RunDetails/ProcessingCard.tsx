@@ -16,6 +16,16 @@ interface ProcessingCardProps {
 
 const STAGE_ORDER = ["reader", "crop", "detect", "feature", "finalize"];
 
+const formatDuration = (seconds: number) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  }
+  return `${m}:${s.toString().padStart(2, "0")}`;
+};
+
 const ProcessingCard: React.FC<ProcessingCardProps> = ({
   run,
   isProcessing,
@@ -27,6 +37,16 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
   handleStopProcessing,
   handleUpdateWorkers,
 }) => {
+  // Calculate ETA
+  const finalizedCount = processingProgress?.stages.finalize?.current ?? 0;
+  const totalFrames = processingProgress?.total_frames || 1;
+  const remaining = Math.max(0, totalFrames - finalizedCount);
+  const etaSecs =
+    processingProgress?.effective_fps && processingProgress.effective_fps > 0
+      ? remaining / processingProgress.effective_fps
+      : null;
+  const etaDisplay = etaSecs !== null ? formatDuration(etaSecs) : "--:--";
+
   return (
     <div className="glass-card">
       <div
@@ -76,7 +96,7 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
           >
             <span style={{ fontWeight: 500 }}>
               {processingProgress.is_complete
-                ? "Processing complete"
+                ? `Processing complete (${formatDuration(processingProgress.elapsed_secs || 0)})`
                 : isProcessing
                   ? "Processing..."
                   : "Paused"}
@@ -150,6 +170,34 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
                   {processingProgress.effective_fps
                     ? `${processingProgress.effective_fps.toFixed(1)} FPS`
                     : "0.0 FPS"}
+                </span>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(6, 182, 212, 0.05)",
+                  padding: "0.5rem",
+                  borderRadius: "6px",
+                }}
+              >
+                <span
+                  style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}
+                >
+                  Elapsed / ETA
+                </span>
+                <span
+                  style={{
+                    fontSize: "1.125rem",
+                    fontWeight: 600,
+                    color: "var(--accent-secondary)",
+                  }}
+                >
+                  {formatDuration(processingProgress.elapsed_secs || 0)} /{" "}
+                  {etaDisplay}
                 </span>
               </div>
             </div>
@@ -316,7 +364,7 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
                   style={{
                     fontSize: "0.75rem",
                     display: "grid",
-                    gridTemplateColumns: "70px 100px 1fr 60px 60px",
+                    gridTemplateColumns: "70px 100px 1fr 80px 60px",
                     alignItems: "center",
                     gap: "1rem",
                     padding: "0.25rem 0",

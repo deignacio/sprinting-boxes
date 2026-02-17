@@ -1,6 +1,6 @@
 use crate::run_context::CropsConfig;
 use opencv::core::Mat;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,6 +111,17 @@ impl ProcessingState {
         }
     }
 
+    /// Update the total number of frames for the run and all stages.
+    /// Used when a stage (like reader) finishes early and we discover the actual count.
+    pub fn set_total_frames(&self, total: usize) {
+        // Update every stage's total to match the new reality in the progress map
+        if let Ok(mut stages) = self.stages.write() {
+            for progress in stages.values_mut() {
+                progress.total = total;
+            }
+        }
+    }
+
     pub fn to_progress_json(&self) -> serde_json::Value {
         let stages = self.stages.read().unwrap();
 
@@ -151,6 +162,7 @@ impl ProcessingState {
             "active_detect_workers": self.active_detect_workers.load(Ordering::Relaxed),
             "processing_rate": *self.processing_rate.read().unwrap(), // Internal inference rate
             "effective_fps": effective_fps, // Output throughput
+            "elapsed_secs": elapsed,
         })
     }
 }
@@ -211,15 +223,24 @@ impl From<&CropsConfig> for Vec<CropConfig> {
     }
 }
 
+#[derive(Clone)]
 pub struct ReaderControl {
     pub range_pool:
         std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<std::ops::Range<usize>>>>,
     pub target_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    pub tx_v: crossbeam::channel::Sender<RawFrame>,
+    pub tx_v: std::sync::Arc<RwLock<Option<crossbeam::channel::Sender<RawFrame>>>>,
     pub video_path: String,
     pub backend: String,
     pub sample_rate: f64,
-    pub skip_count: usize,
+}
+
+impl ReaderControl {
+    pub fn get_tx(&self) -> Option<crossbeam::channel::Sender<RawFrame>> {
+        self.tx_v.read().unwrap().clone()
+    }
+    pub fn close_tx(&self) {
+        self.tx_v.write().unwrap().take();
+    }
 }
 
 /// A raw frame read from the video source
@@ -244,7 +265,7 @@ pub struct PreprocessedFrame {
 }
 
 /// Enriched detection with counting flags
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrichedDetection {
     pub bbox: BBox, // Corrected to image coords
     pub confidence: f32,
@@ -255,7 +276,7 @@ pub struct EnrichedDetection {
 }
 
 /// Result for a single crop region including detections
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CropResult {
     pub suffix: String,
     pub detections: Vec<EnrichedDetection>,
@@ -267,7 +288,7 @@ pub struct CropResult {
 }
 
 /// A frame after detection has been run
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DetectedFrame {
     pub id: usize,
     pub results: Vec<CropResult>,
@@ -290,7 +311,7 @@ mod tests {
     #[test]
     fn test_monotonic_progress() {
         let state = ProcessingState::new("test_run".to_string(), 100);
-        
+
         // Initial state
         {
             let stages = state.stages.read().unwrap();
@@ -311,7 +332,7 @@ mod tests {
         {
             let stages = state.stages.read().unwrap();
             assert_eq!(stages.get("reader").unwrap().current, 15); // Monotonic increment
-            // EMA check: 50 * 0.9 + 60 * 0.1 = 45 + 6 = 51
+                                                                   // EMA check: 50 * 0.9 + 60 * 0.1 = 45 + 6 = 51
             assert!((stages.get("reader").unwrap().ms_per_frame - 51.0).abs() < 0.001);
         }
     }

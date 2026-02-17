@@ -11,7 +11,8 @@ use opencv::{
 pub struct OpencvReader {
     capture: VideoCapture,
     _source_fps: f64,
-    _skip_count: usize,
+    _sample_rate: f64,
+    _total_frames: usize,
 }
 
 impl OpencvReader {
@@ -36,26 +37,35 @@ impl OpencvReader {
             tracing::warn!("OpencvReader: Failed to get FPS from metadata, falling back to 30.0");
             fps = 30.0;
         }
-        let skip_count = (fps / sample_rate).round() as usize;
+        let raw_count = capture.get(CAP_PROP_FRAME_COUNT)? as usize;
+        let duration_secs = if fps > 0.0 {
+            raw_count as f64 / fps
+        } else {
+            0.0
+        };
+
+        tracing::info!(
+            "OpencvReader: opened {}, duration={:.2}s, fps={:.2}, stream_frames={}",
+            path,
+            duration_secs,
+            fps,
+            raw_count
+        );
 
         Ok(Self {
             capture,
             _source_fps: fps,
-            _skip_count: skip_count.max(1),
+            _sample_rate: sample_rate,
+            _total_frames: raw_count,
         })
     }
 }
 
 impl VideoReader for OpencvReader {
     fn frame_count(&self) -> Result<usize> {
-        let raw_count = self.capture.get(CAP_PROP_FRAME_COUNT)? as usize;
-        if self._skip_count > 0 {
-            // Number of times we call next_frame()
-            // Each call reads one frame and then grabs skip_count - 1 frames
-            Ok(raw_count.div_ceil(self._skip_count))
-        } else {
-            Ok(raw_count)
-        }
+        let units =
+            (self._total_frames as f64 * self._sample_rate / self._source_fps).floor() as usize;
+        Ok(units.max(1))
     }
 
     fn source_fps(&self) -> Result<f64> {
@@ -67,23 +77,32 @@ impl VideoReader for OpencvReader {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Mat> {
+    fn read_frame(&mut self) -> Result<Mat> {
         let mut frame = Mat::default();
         let success = self.capture.read(&mut frame)?;
         if !success || frame.empty() {
             return Err(anyhow!("Failed to read frame"));
         }
 
-        // The read() already advanced by 1.
-        // If we want to skip N frames total between samples, we grab N-1 more.
-        if self._skip_count > 1 {
-            for _ in 0..(self._skip_count - 1) {
+        Ok(frame)
+    }
+
+    fn read_unit(&mut self, unit_id: usize) -> Result<Mat> {
+        let target_frame = super::unit_to_frame(unit_id, self._source_fps, self._sample_rate);
+        let current_frame = self.capture.get(CAP_PROP_POS_FRAMES)? as usize;
+
+        if target_frame < current_frame {
+            // Must seek backwards
+            self.seek_to_frame(target_frame)?;
+        } else if target_frame > current_frame {
+            // Skip forward efficiently
+            for _ in 0..(target_frame - current_frame) {
                 if !self.capture.grab()? {
-                    break;
+                    return Err(anyhow!("Failed to grab frame at {}", target_frame));
                 }
             }
         }
 
-        Ok(frame)
+        self.read_frame()
     }
 }

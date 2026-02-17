@@ -282,6 +282,10 @@ pub fn feature_worker(
 
     // Create CSV files
     let features_path = config.output_dir.join("features.csv");
+    tracing::info!(
+        "Feature worker started. output_dir: {:?}",
+        config.output_dir
+    );
     let points_path = config.output_dir.join("points.csv");
 
     let mut features_csv = std::fs::File::create(&features_path)?;
@@ -484,15 +488,73 @@ pub fn feature_worker(
                 state.update_stage("feature", 1, duration_ms);
 
                 if tx.send(frame).is_err() {
+                    tracing::error!("Feature worker: failed to send frame to finalize");
                     break;
                 }
             }
-
             next_input_id += 1;
         }
     }
 
-    // Flush remaining frames
+    tracing::info!("Feature worker: input channel closed. Flushing buffers...");
+
+    // 1. Flush reordering buffer (input_buffer)
+    // If there were gaps, we just skip them and process what we have.
+    while !input_buffer.is_empty() {
+        if let Some(mut current_frame) = input_buffer.remove(&next_input_id) {
+            // Process the frame
+            let mut left_count_raw = 0.0;
+            let mut right_count_raw = 0.0;
+            let mut field_count_raw = 0.0;
+            for res in &mut current_frame.results {
+                let mut count = 0;
+                for d in &mut res.detections {
+                    let bc_x = d.bbox.x + d.bbox.w / 2.0;
+                    let bc_y = d.bbox.y + d.bbox.h;
+                    d.is_counted = is_point_in_polygon_robust(bc_x, bc_y, &res.effective_polygon);
+                    if d.is_counted {
+                        count += 1;
+                    }
+                }
+                let norm = count as f32 / config.team_size as f32;
+                match res.suffix.as_str() {
+                    "left" => left_count_raw = norm,
+                    "right" => right_count_raw = norm,
+                    "field" => field_count_raw = norm,
+                    _ => {}
+                }
+            }
+            current_frame.left_count = left_count_raw;
+            current_frame.right_count = right_count_raw;
+            current_frame.field_count = field_count_raw;
+            current_frame.pre_point_score = calculate_pre_point_score(
+                left_count_raw,
+                right_count_raw,
+                field_count_raw,
+                config.team_size,
+            );
+
+            history_buffer.push(FrameHistory {
+                left_count: left_count_raw,
+                right_count: right_count_raw,
+            });
+            let cliff_results = cliff_state.push(current_frame.id, current_frame.pre_point_score);
+            lookahead_buffer.push(current_frame);
+            for (cid, is_cliff) in cliff_results {
+                if is_cliff {
+                    if let Some(f) = lookahead_buffer.iter_mut().find(|f| f.id == cid) {
+                        f.is_cliff = true;
+                    }
+                }
+            }
+        }
+        next_input_id += 1;
+        if next_input_id > state.total_frames + 1000 {
+            break;
+        }
+    }
+
+    // 2. Flush remaining frames from lookahead_buffer
     while !lookahead_buffer.is_empty() {
         let frame = lookahead_buffer.remove(0);
 
@@ -522,5 +584,6 @@ pub fn feature_worker(
         let _ = tx.send(frame);
     }
 
+    tracing::info!("Feature worker finished gracefully");
     Ok(())
 }

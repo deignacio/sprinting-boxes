@@ -24,7 +24,7 @@ pub fn extract_calibration_frames(
         let frame_index = (timestamp * source_fps) as usize;
 
         if session.reader.seek_to_frame(frame_index).is_ok() {
-            if let Ok(mat) = session.reader.next_frame() {
+            if let Ok(mat) = session.reader.read_frame() {
                 let filename = format!("frame_{:03}.jpg", i + 1);
                 let output_path = output_dir.join(&filename);
 

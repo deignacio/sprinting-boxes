@@ -668,7 +668,7 @@ export default function CliffDetail({
                         onClick={() => setEnlarged(!enlarged)}
                       >
                         <img
-                          src={`/api/runs/${runId}/crops/frame_${String(frame.frame_index).padStart(6, "0")}_${boundary}.jpg`}
+                          src={`/api/runs/${runId}/crops/frame_${String(frame.frame_index).padStart(6, "0")}_${boundary}.jpg?annotate=true`}
                           alt={`${boundary} crop`}
                           style={{
                             width: "100%",

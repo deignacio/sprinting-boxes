@@ -25,20 +25,44 @@ lazy_static::lazy_static! {
 /// Control structure for detection workers
 pub struct DetectionControl {
     pub source_rx: crossbeam::channel::Receiver<crate::pipeline::types::PreprocessedFrame>,
-    pub result_tx: crossbeam::channel::Sender<crate::pipeline::types::DetectedFrame>,
+    pub result_tx:
+        Arc<RwLock<Option<crossbeam::channel::Sender<crate::pipeline::types::DetectedFrame>>>>,
     pub model_path: String,
     pub min_conf: f32,
     pub slice_conf: crate::pipeline::slicing::SliceConfig,
     pub target_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+impl DetectionControl {
+    pub fn get_tx(
+        &self,
+    ) -> Option<crossbeam::channel::Sender<crate::pipeline::types::DetectedFrame>> {
+        self.result_tx.read().unwrap().clone()
+    }
+    pub fn close_tx(&self) {
+        self.result_tx.write().unwrap().take();
+    }
+}
+
 /// Control structure for crop workers
 pub struct CropControl {
     pub source_rx: crossbeam::channel::Receiver<crate::pipeline::types::RawFrame>,
-    pub result_tx: crossbeam::channel::Sender<crate::pipeline::types::PreprocessedFrame>,
+    pub result_tx:
+        Arc<RwLock<Option<crossbeam::channel::Sender<crate::pipeline::types::PreprocessedFrame>>>>,
     pub configs: Arc<Vec<crate::pipeline::types::CropConfig>>,
     pub enable_clahe: bool,
     pub target_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CropControl {
+    pub fn get_tx(
+        &self,
+    ) -> Option<crossbeam::channel::Sender<crate::pipeline::types::PreprocessedFrame>> {
+        self.result_tx.read().unwrap().clone()
+    }
+    pub fn close_tx(&self) {
+        self.result_tx.write().unwrap().take();
+    }
 }
 
 /// Manager that holds state and control handles for a run
@@ -110,8 +134,6 @@ pub fn start_processing(
     };
 
     let total_units = reader.frame_count()?;
-    let fps = reader.source_fps()?;
-    let skip_count = (fps / sample_rate).round() as usize;
 
     // Create range pool for parallel readers (chunks of 50 sampled units)
     let chunk_size = 50;
@@ -149,16 +171,15 @@ pub fn start_processing(
     let reader_control = Arc::new(crate::pipeline::types::ReaderControl {
         range_pool,
         target_count: target_reader,
-        tx_v: tx_v.clone(),
+        tx_v: Arc::new(RwLock::new(Some(tx_v))),
         video_path: path_str.to_string(),
         backend: backend.to_string(),
         sample_rate,
-        skip_count,
     });
 
     let detect_control = Arc::new(DetectionControl {
         source_rx: rx_c.clone(),
-        result_tx: tx_d.clone(),
+        result_tx: Arc::new(RwLock::new(Some(tx_d))),
         model_path: model_path.to_string(),
         min_conf,
         slice_conf: slice_config,
@@ -167,7 +188,7 @@ pub fn start_processing(
 
     let crop_control = Arc::new(CropControl {
         source_rx: rx_v, // crop worker now takes from rx_v (reader output)
-        result_tx: tx_c, // outputs to rx_c (detection input)
+        result_tx: Arc::new(RwLock::new(Some(tx_c))), // outputs to rx_c (detection input)
         configs: configs.clone(),
         enable_clahe: true, // Hardcoded for now as per previous logic logic but explicit
         target_count: target_crop.clone(),
@@ -180,7 +201,7 @@ pub fn start_processing(
         crop_control: crop_control.clone(),
     });
 
-    register_pipeline(&run_context.run_id, manager);
+    register_pipeline(&run_context.run_id, manager.clone());
 
     // Spawn 1: Readers
     spawn_reader_worker(state.clone(), reader_control.clone());
@@ -222,6 +243,9 @@ pub fn start_processing(
         }
     });
 
+    // Spawn 6: Supervisor (handles stage completion and channel closing)
+    spawn_supervisor(manager);
+
     Ok(state)
 }
 
@@ -230,7 +254,7 @@ fn spawn_reader_worker(
     control: Arc<crate::pipeline::types::ReaderControl>,
 ) {
     state.active_reader_workers.fetch_add(1, Ordering::Relaxed);
-    let tx_v = control.tx_v.clone();
+    let tx_v = control.get_tx().expect("Reader transmitter missing");
     std::thread::spawn(move || {
         tracing::info!("Spawning new reader worker");
         let result = crate::pipeline::reader::read_worker(tx_v, state.clone(), control);
@@ -244,13 +268,80 @@ fn spawn_reader_worker(
     });
 }
 
+/// Spawns a background thread that monitors the completion of each pipeline stage.
+/// The supervisor ensures a sequential, clean shutdown by:
+/// 1. Waiting for all Reader workers to finish sharded ranges.
+/// 2. Closing the Reader -> Crop channel.
+/// 3. Waiting for all Crop workers to finish.
+/// 4. Closing the Crop -> Detection channel.
+/// 5. Waiting for all Detection workers to finish.
+/// 6. Closing the Detection -> Finalization channel.
+/// 7. Updating the final total_frames count for accurate 100% progress reporting.
+fn spawn_supervisor(manager: Arc<PipelineManager>) {
+    let run_id = manager.state.run_id.clone();
+    thread::spawn(move || {
+        tracing::info!("[Supervisor:{}] Monitoring pipeline completion", run_id);
+
+        // 1. Wait for Reader stage
+        while manager.state.active_reader_workers.load(Ordering::Relaxed) > 0 {
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+        // Check if pool is empty (double check)
+        let pool_empty = manager.reader_control.range_pool.lock().unwrap().is_empty();
+        if pool_empty {
+            tracing::info!("[Supervisor:{}] Reader stage done. Closing tx_v.", run_id);
+            // Before closing, if the reader finished early, update the total for all downstream stages
+            let reader_final_count = manager
+                .state
+                .stages
+                .read()
+                .unwrap()
+                .get("reader")
+                .map(|s| s.current)
+                .unwrap_or(0);
+            if reader_final_count > 0 {
+                manager.state.set_total_frames(reader_final_count);
+            }
+            manager.reader_control.close_tx();
+        }
+
+        // 2. Wait for Crop stage
+        while manager.state.active_crop_workers.load(Ordering::Relaxed) > 0 {
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+        tracing::info!("[Supervisor:{}] Crop stage done. Closing tx_c.", run_id);
+        manager.crop_control.close_tx();
+
+        // 3. Wait for Detection stage
+        while manager.state.active_detect_workers.load(Ordering::Relaxed) > 0 {
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+        tracing::info!(
+            "[Supervisor:{}] Detection stage done. Closing tx_d.",
+            run_id
+        );
+        manager.detect_control.close_tx();
+
+        // 4. Wait for Finalize to finish (indicated by is_complete)
+        while !manager.state.is_complete.load(Ordering::Relaxed)
+            && manager.state.is_active.load(Ordering::Relaxed)
+        {
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        tracing::info!("[Supervisor:{}] Pipeline finished. Unregistering.", run_id);
+        unregister_pipeline(&run_id);
+    });
+}
+
 fn spawn_detection_worker(state: Arc<ProcessingState>, control: Arc<DetectionControl>) {
     state.active_detect_workers.fetch_add(1, Ordering::Relaxed);
+    let tx_d = control.get_tx().expect("Detection transmitter missing");
     std::thread::spawn(move || {
         tracing::info!("Spawning new detection worker");
         let result = crate::pipeline::detection_worker::detection_worker(
             control.source_rx.clone(),
-            control.result_tx.clone(),
+            tx_d,
             &control.model_path,
             control.min_conf,
             control.slice_conf.clone(),
@@ -269,11 +360,12 @@ fn spawn_detection_worker(state: Arc<ProcessingState>, control: Arc<DetectionCon
 
 fn spawn_crop_worker(state: Arc<ProcessingState>, control: Arc<CropControl>) {
     state.active_crop_workers.fetch_add(1, Ordering::Relaxed);
+    let tx_c = control.get_tx().expect("Crop transmitter missing");
     std::thread::spawn(move || {
         tracing::info!("Spawning new crop worker");
         let result = crate::pipeline::crop::crop_worker(
             control.source_rx.clone(),
-            control.result_tx.clone(),
+            tx_c,
             control.configs.clone(),
             control.enable_clahe,
             state.clone(),
@@ -379,16 +471,15 @@ mod tests {
         let reader_control = Arc::new(crate::pipeline::types::ReaderControl {
             range_pool: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             target_count: target_reader.clone(),
-            tx_v: tx_v.clone(),
+            tx_v: Arc::new(RwLock::new(Some(tx_v))),
             video_path: "mock_video".to_string(),
             backend: "mock_backend".to_string(),
             sample_rate: 1.0,
-            skip_count: 1,
         });
 
         let detect_control = Arc::new(DetectionControl {
             source_rx: rx_c,
-            result_tx: tx_d,
+            result_tx: Arc::new(RwLock::new(Some(tx_d))),
             model_path: "mock_model".to_string(),
             min_conf: 0.5,
             slice_conf: SliceConfig::new(640, 0.2),
@@ -397,7 +488,7 @@ mod tests {
 
         let crop_control = Arc::new(CropControl {
             source_rx: rx_v,
-            result_tx: tx_c,
+            result_tx: Arc::new(RwLock::new(Some(tx_c))),
             configs: Arc::new(vec![]),
             enable_clahe: true,
             target_count: target_crop.clone(),

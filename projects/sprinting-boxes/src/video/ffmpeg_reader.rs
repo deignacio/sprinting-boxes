@@ -68,7 +68,7 @@ pub struct FfmpegReader {
     width: u32,
     height: u32,
     source_fps: f64,
-    skip_count: usize,
+    sample_rate: f64,
     total_frames: usize,
     frames_decoded: usize,
     // Hardware acceleration state
@@ -80,6 +80,8 @@ pub struct FfmpegReader {
     reuse_frame: ffmpeg_next::util::frame::Video,
     /// Persistent packet object to avoid allocations.
     reuse_packet: ffmpeg_next::codec::packet::Packet,
+    /// Whether we've sent EOF to the decoder.
+    eof_sent: bool,
 }
 
 // SAFETY: FfmpegReader is only ever used from the single reader thread in the pipeline.
@@ -112,15 +114,24 @@ impl FfmpegReader {
             tracing::warn!("FfmpegReader: could not determine FPS, defaulting to 30.0");
             30.0
         };
-        let skip_count = (source_fps / sample_rate).round() as usize;
 
         let total_frames = video_stream.frames() as usize;
-        let total_frames = if total_frames == 0 {
-            let duration_secs = input_ctx.duration() as f64 / ffi::AV_TIME_BASE as f64;
+        let duration_secs = input_ctx.duration() as f64 / ffi::AV_TIME_BASE as f64;
+
+        let calculated_total_frames = if total_frames == 0 {
             (duration_secs * source_fps).round() as usize
         } else {
             total_frames
         };
+
+        tracing::info!(
+            "FfmpegReader: opened {}, duration={:.2}s, fps={:.2}, stream_frames={}, estimated_total={}",
+            path,
+            duration_secs,
+            source_fps,
+            total_frames,
+            calculated_total_frames
+        );
 
         // --- Set up decoder context ---
         let mut decoder_ctx =
@@ -160,20 +171,26 @@ impl FfmpegReader {
             width,
             height,
             source_fps,
-            skip_count: skip_count.max(1),
-            total_frames,
+            sample_rate,
+            total_frames: calculated_total_frames,
             frames_decoded: 0,
             _hw_device_ctx: hw_device_ctx,
             hw_pix_fmt,
             _using_hw,
             reuse_frame: ffmpeg_next::util::frame::Video::empty(),
             reuse_packet: ffmpeg_next::codec::packet::Packet::empty(),
+            eof_sent: false,
         })
     }
 
     /// Try to configure VideoToolbox hardware acceleration on the decoder context.
     /// Returns (device_ctx, hw_pix_fmt, success_bool).
     /// On failure, returns (None, None, false) — caller should proceed with CPU decoding.
+    /// Attempts to probe the decoder for hardware acceleration support (VideoToolbox on macOS).
+    /// If successful, it returns:
+    /// - `Some(HwDeviceCtx)`: RAII wrapper for the hardware context.
+    /// - `Some(AVPixelFormat)`: The output pixel format the hardware decoder will use (e.g. `AV_PIX_FMT_VIDEOTOOLBOX`).
+    /// - `true`: If hardware acceleration is active.
     fn try_setup_hw_accel(
         decoder_ctx: &mut ffmpeg_next::codec::context::Context,
     ) -> (Option<HwDeviceCtx>, Option<ffi::AVPixelFormat>, bool) {
@@ -286,40 +303,45 @@ impl FfmpegReader {
     /// This is the core decoding loop used by both owned and reuse paths.
     fn decode_loop(&mut self, target_frame: &mut ffmpeg_next::util::frame::Video) -> Result<()> {
         loop {
+            // 1. Try to receive a decoded frame
             match self.decoder.receive_frame(target_frame) {
-                Ok(()) => {
-                    return Ok(());
-                }
+                Ok(()) => return Ok(()),
                 Err(ffmpeg_next::Error::Other { errno: ffi::EAGAIN }) => {
-                    // Decoder needs more data — feed packets below
+                    if self.eof_sent {
+                        return Err(anyhow!("End of stream"));
+                    }
+                    // Continue to feeding packets
+                }
+                Err(ffmpeg_next::Error::Eof) => {
+                    return Err(anyhow!("End of stream"));
                 }
                 Err(e) => return Err(anyhow!("Decoder error: {}", e)),
             }
 
-            // Feed packets until we find a video packet
-            let mut found_packet = false;
-            while self.reuse_packet.read(&mut self.input_ctx).is_ok() {
-                if self.reuse_packet.stream() == self.video_stream_index {
-                    self.decoder
-                        .send_packet(&self.reuse_packet)
-                        .context("Failed to send packet to decoder")?;
-                    found_packet = true;
-                    break;
-                }
-            }
-
-            if !found_packet {
-                // EOF — flush the decoder
-                self.decoder
-                    .send_eof()
-                    .context("Failed to send EOF to decoder")?;
-
-                match self.decoder.receive_frame(target_frame) {
-                    Ok(()) => {
-                        return Ok(());
+            // 2. Feed packets until we find a video packet OR reach EOF
+            if !self.eof_sent {
+                let mut found_packet = false;
+                while self.reuse_packet.read(&mut self.input_ctx).is_ok() {
+                    if self.reuse_packet.stream() == self.video_stream_index {
+                        self.decoder
+                            .send_packet(&self.reuse_packet)
+                            .context("Failed to send packet to decoder")?;
+                        found_packet = true;
+                        break;
                     }
-                    Err(_) => return Err(anyhow!("End of stream")),
                 }
+
+                if !found_packet {
+                    // EOF reached in input file — notify decoder to flush
+                    self.decoder
+                        .send_eof()
+                        .context("Failed to send EOF to decoder")?;
+                    self.eof_sent = true;
+                    // Loop back to try receive_frame one last time(s)
+                }
+            } else {
+                // If EOF already sent and receive_frame returned EAGAIN, we are truly done
+                return Err(anyhow!("End of stream"));
             }
         }
     }
@@ -362,6 +384,10 @@ impl FfmpegReader {
     }
 
     /// Process a decoded frame: transfer from GPU if needed, and scale/convert to BGR24.
+    /// Processes a decoded frame by:
+    /// 1. Transferring it from GPU to CPU memory if hardware acceleration is active.
+    /// 2. Converting it to the target BGR format if needed.
+    /// If hardware transfer fails, it logs a warning and continues with the GPU frame (which will likely fail later).
     fn process_decoded_frame(
         &mut self,
         frame: ffmpeg_next::util::frame::Video,
@@ -437,11 +463,9 @@ fn bgr_frame_to_mat(frame: &ffmpeg_next::util::frame::Video) -> Result<core::Mat
 
 impl VideoReader for FfmpegReader {
     fn frame_count(&self) -> Result<usize> {
-        if self.skip_count > 1 {
-            Ok(self.total_frames.div_ceil(self.skip_count))
-        } else {
-            Ok(self.total_frames)
-        }
+        let units =
+            (self.total_frames as f64 * self.sample_rate / self.source_fps).floor() as usize;
+        Ok(units.max(1))
     }
 
     fn source_fps(&self) -> Result<f64> {
@@ -455,34 +479,44 @@ impl VideoReader for FfmpegReader {
             .seek(timestamp, ..timestamp)
             .context("Failed to seek")?;
         self.decoder.flush();
+        self.eof_sent = false;
         self.scaler = None; // reset scaler on seek (format might change)
         self.frames_decoded = frame_num;
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<core::Mat> {
-        // 1. Get the raw frame to be sampled
-        // Ensure skip hint is reset to default so we get a complete decoded frame
+    fn read_unit(&mut self, unit_id: usize) -> Result<core::Mat> {
+        let target_frame = super::unit_to_frame(unit_id, self.source_fps, self.sample_rate);
+
+        if target_frame < self.frames_decoded {
+            // Backward seek required
+            self.seek_to_frame(target_frame)?;
+        } else if target_frame > self.frames_decoded {
+            // Skip forward.
+            // optimization: if target is far, seek.
+            if target_frame - self.frames_decoded > 50 {
+                self.seek_to_frame(target_frame)?;
+            } else {
+                // Ensure skip hint is set for speed during seeking
+                self.set_skip_frame_hint(ffmpeg_next::codec::discard::Discard::NonReference);
+                while self.frames_decoded < target_frame {
+                    // Fast decode to advance
+                    self.receive_into_reuse()?;
+                    self.frames_decoded += 1;
+                }
+            }
+        }
+
+        self.read_frame()
+    }
+
+    fn read_frame(&mut self) -> Result<core::Mat> {
+        // Encode it for real.
         self.set_skip_frame_hint(ffmpeg_next::codec::discard::Discard::Default);
-
         let raw_frame = self.receive_next_raw_owned()?;
-
-        // 2. ONLY process this frame (GPU->CPU transfer, scaling)
         let processed_frame = self.process_decoded_frame(raw_frame)?;
         let bgr_mat = bgr_frame_to_mat(&processed_frame)?;
         self.frames_decoded += 1;
-
-        // 3. Skip frames efficiently by only decoding them (no transfer/scale)
-        // and using the Discard::NonReference hint to speed up the decoder.
-        if self.skip_count > 1 {
-            self.set_skip_frame_hint(ffmpeg_next::codec::discard::Discard::NonReference);
-            for _ in 0..(self.skip_count - 1) {
-                if self.receive_into_reuse().is_err() {
-                    break;
-                }
-                self.frames_decoded += 1;
-            }
-        }
 
         Ok(bgr_mat)
     }

@@ -41,4 +41,5 @@ export interface ProcessingProgress {
   active_detect_workers?: number;
   processing_rate?: number;
   effective_fps?: number;
+  elapsed_secs?: number;
 }

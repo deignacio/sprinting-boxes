@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use chrono;
+use opencv::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -548,6 +549,7 @@ pub struct FeatureData {
 pub async fn serve_run_crop_handler(
     State(args): State<Arc<Args>>,
     Path((run_id, filename)): Path<(String, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
     let output_root = std::path::Path::new(&args.output_root);
     let runs = list_runs(output_root).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -557,22 +559,103 @@ pub async fn serve_run_crop_handler(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let crops_dir = run_context.output_dir.join("crops");
-    let file_path = crops_dir.join(filename);
+    let file_path = crops_dir.join(&filename);
 
     if !file_path.exists() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    match fs::read(file_path) {
-        Ok(data) => {
-            let mut response = axum::response::IntoResponse::into_response(data);
-            response.headers_mut().insert(
-                axum::http::header::CONTENT_TYPE,
-                "image/jpeg".parse().unwrap(),
-            );
-            Ok(response)
+    // Check if annotation is requested
+    let annotate = params.get("annotate").map(|v| v == "true").unwrap_or(false);
+
+    if annotate {
+        // Load raw crop image
+        let img =
+            opencv::imgcodecs::imread(file_path.to_str().unwrap(), opencv::imgcodecs::IMREAD_COLOR)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        // Parse frame index and suffix from filename
+        // Expected format: frame_XXXXXX_{left|right}.jpg
+        let frame_info = filename
+            .strip_prefix("frame_")
+            .and_then(|s| s.strip_suffix(".jpg"))
+            .ok_or(StatusCode::BAD_REQUEST)?;
+
+        let parts: Vec<&str> = frame_info.split('_').collect();
+        if parts.len() != 2 {
+            return Err(StatusCode::BAD_REQUEST);
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+
+        let frame_index: usize = parts[0].parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+        let suffix = parts[1];
+
+        // Load detections.json to get metadata for this frame
+        let detections_path = run_context.output_dir.join("detections.json");
+        if !detections_path.exists() {
+            tracing::warn!(
+                "detections.json missing for run {}, cannot annotate",
+                run_id
+            );
+            return Err(StatusCode::NOT_FOUND);
+        }
+
+        let detections_json =
+            fs::read_to_string(&detections_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let all_frames: Vec<crate::pipeline::types::DetectedFrame> =
+            serde_json::from_str(&detections_json)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        // Find the matching frame and crop
+        let frame = all_frames
+            .iter()
+            .find(|f| f.id == frame_index)
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        let crop_result = frame
+            .results
+            .iter()
+            .find(|r| r.suffix == suffix)
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        // Draw annotations
+        let annotated_img = crate::pipeline::finalize::draw_annotations(
+            &img,
+            &crop_result.detections,
+            &crop_result.original_polygon,
+            &crop_result.effective_polygon,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        // Encode to JPEG
+        let mut buf = opencv::core::Vector::<u8>::new();
+        opencv::imgcodecs::imencode(
+            ".jpg",
+            &annotated_img,
+            &mut buf,
+            &opencv::core::Vector::new(),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let data = buf.to_vec();
+        let mut response = axum::response::IntoResponse::into_response(data);
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            "image/jpeg".parse().unwrap(),
+        );
+        Ok(response)
+    } else {
+        // Serve raw crop
+        match fs::read(file_path) {
+            Ok(data) => {
+                let mut response = axum::response::IntoResponse::into_response(data);
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    "image/jpeg".parse().unwrap(),
+                );
+                Ok(response)
+            }
+            Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
     }
 }
 

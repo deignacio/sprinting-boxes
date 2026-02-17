@@ -53,18 +53,14 @@ pub fn read_worker(
             None => break, // No more work
         };
 
-        // 3. Seek to start of range (sampled units * skip_count = original frame index)
-        let skip_count = control.skip_count;
-        reader.seek_to_frame(range.start * skip_count)?;
-
-        // 4. Read the chunk
+        // 3. Read the chunk using absolute unit mapping (handled by reader)
         for unit_id in range {
             if !state.is_active.load(Ordering::Relaxed) {
                 return Ok(());
             }
 
             let start_inst = std::time::Instant::now();
-            match reader.next_frame() {
+            match reader.read_unit(unit_id) {
                 Ok(mat) => {
                     if tx.send(RawFrame { id: unit_id, mat }).is_err() {
                         return Ok(()); // Receiver closed

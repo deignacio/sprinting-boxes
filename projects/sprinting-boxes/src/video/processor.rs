@@ -79,7 +79,9 @@ where
 {
     let mut session = VideoSession::new(video_path, backend, sample_rate)?;
 
-    while let Ok(frame) = session.reader.next_frame() {
+    let total_units = session.reader.frame_count()?;
+    for i in 0..total_units {
+        let frame = session.reader.read_unit(i)?;
         processor.process(frame)?;
         session.processed_frames += 1;
         session.pb.inc(1);
