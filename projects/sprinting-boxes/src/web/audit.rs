@@ -559,11 +559,34 @@ pub async fn serve_run_crop_handler(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let crops_dir = run_context.output_dir.join("crops");
-    let file_path = crops_dir.join(&filename);
+    let mut file_path = crops_dir.join(&filename);
+
+    if !file_path.exists() {
+        // Fallback: If overview is requested but missing, try to find ANY crop for this frame
+        // to support old runs.
+        if filename.contains("_overview.jpg") {
+            let frame_prefix = filename.split("_overview.jpg").next().unwrap_or("");
+            if let Ok(entries) = fs::read_dir(&crops_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with(frame_prefix) && name.ends_with(".jpg") {
+                        file_path = crops_dir.join(name);
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     if !file_path.exists() {
         return Err(StatusCode::NOT_FOUND);
     }
+
+    let final_filename = file_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&filename)
+        .to_string();
 
     // Check if annotation is requested
     let annotate = params.get("annotate").map(|v| v == "true").unwrap_or(false);
@@ -574,9 +597,8 @@ pub async fn serve_run_crop_handler(
             opencv::imgcodecs::imread(file_path.to_str().unwrap(), opencv::imgcodecs::IMREAD_COLOR)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        // Parse frame index and suffix from filename
-        // Expected format: frame_XXXXXX_{left|right}.jpg
-        let frame_info = filename
+        // Parse frame index and suffix from final filename
+        let frame_info = final_filename
             .strip_prefix("frame_")
             .and_then(|s| s.strip_suffix(".jpg"))
             .ok_or(StatusCode::BAD_REQUEST)?;
@@ -618,13 +640,8 @@ pub async fn serve_run_crop_handler(
             .ok_or(StatusCode::NOT_FOUND)?;
 
         // Draw annotations
-        let annotated_img = crate::pipeline::finalize::draw_annotations(
-            &img,
-            &crop_result.detections,
-            &crop_result.original_polygon,
-            &crop_result.effective_polygon,
-        )
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let annotated_img = crate::pipeline::finalize::draw_annotations(&img, crop_result)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // Encode to JPEG
         let mut buf = opencv::core::Vector::<u8>::new();

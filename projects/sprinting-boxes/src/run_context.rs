@@ -179,7 +179,7 @@ impl RunContext {
         const CROP_PADDING: f32 = 0.01; // 1% crop padding
         const BUFFER_PCT: f32 = 0.03; // 3% diagonal buffer
 
-        // Left Endzone
+        // Left Endzone (Effective)
         let left_buffer_dist =
             crate::pipeline::geometry::compute_buffer_distance(&left_global, BUFFER_PCT);
         let left_effective = crate::pipeline::geometry::compute_effective_endzone_polygon(
@@ -187,13 +187,8 @@ impl RunContext {
             &field_global,
             left_buffer_dist,
         );
-        let left_bbox = crate::pipeline::geometry::compute_bbox_with_crop_padding(
-            &left_effective,
-            CROP_PADDING,
-        )
-        .ok_or_else(|| anyhow::anyhow!("Failed to compute left endzone bbox"))?;
 
-        // Right Endzone
+        // Right Endzone (Effective)
         let right_buffer_dist =
             crate::pipeline::geometry::compute_buffer_distance(&right_global, BUFFER_PCT);
         let right_effective = crate::pipeline::geometry::compute_effective_endzone_polygon(
@@ -201,25 +196,27 @@ impl RunContext {
             &field_global,
             right_buffer_dist,
         );
-        let right_bbox = crate::pipeline::geometry::compute_bbox_with_crop_padding(
-            &right_effective,
-            CROP_PADDING,
-        )
-        .ok_or_else(|| anyhow::anyhow!("Failed to compute right endzone bbox"))?;
+
+        // Create a union of all points to find the overview bounding box
+        let mut all_points = Vec::new();
+        all_points.extend_from_slice(&left_effective);
+        all_points.extend_from_slice(&right_effective);
+        all_points.extend_from_slice(&field_global);
+
+        let overview_bbox =
+            crate::pipeline::geometry::compute_bbox_with_crop_padding(&all_points, CROP_PADDING)
+                .ok_or_else(|| anyhow::anyhow!("Failed to compute overview bbox"))?;
 
         let crops = CropsConfig {
-            left_end_zone: CropConfigData {
-                name: "left".to_string(),
-                bbox: left_bbox,
-                original_polygon: left_global,
-                effective_polygon: left_effective,
+            overview: CropConfigData {
+                name: "overview".to_string(),
+                bbox: overview_bbox,
+                original_polygon: all_points.clone(), // Union of all original points
+                effective_polygon: all_points,        // Same for overview
             },
-            right_end_zone: CropConfigData {
-                name: "right".to_string(),
-                bbox: right_bbox,
-                original_polygon: right_global,
-                effective_polygon: right_effective,
-            },
+            left_end_zone_polygon: left_effective,
+            right_end_zone_polygon: right_effective,
+            field_polygon: field_global,
         };
 
         let crops_path = self.output_dir.join("crops.json");

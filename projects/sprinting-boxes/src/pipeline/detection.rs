@@ -3,7 +3,7 @@ use image::{DynamicImage, ImageBuffer, Rgb};
 use opencv::core::Mat;
 use opencv::prelude::*;
 use usls::models::RTDETR;
-use usls::{Config, Image};
+use usls::Config;
 
 /// A wrapper around the USLS RT-DETR model that handles BGR-to-RGB conversion
 /// and corrects for aspect-ratio padding bugs in the underlying model library.
@@ -34,63 +34,77 @@ impl ObjectDetector {
 
     /// Run detection on a batch of OpenCV Mats.
     pub fn detect_batch(&mut self, images: &[Mat]) -> Result<Vec<Vec<usls::Hbb>>> {
-        let mut usls_images = Vec::with_capacity(images.len());
-        let mut corrections = Vec::with_capacity(images.len());
+        const CHUNK_SIZE: usize = 8;
+        let mut final_batch_results = Vec::with_capacity(images.len());
 
-        for image in images {
-            let dynamic_image = mat_to_dynamic_image(image)?;
+        for chunk in images.chunks(CHUNK_SIZE) {
+            let chunk_start = std::time::Instant::now();
+            let mut usls_images = Vec::with_capacity(chunk.len());
+            let mut corrections = Vec::with_capacity(chunk.len());
 
-            // Correction calculations (USLS RT-DETR bug workaround)
-            let size = image.size()?;
-            let img_w = size.width as f32;
-            let img_h = size.height as f32;
+            for image in chunk {
+                let dynamic_image = mat_to_dynamic_image(image)?;
 
-            let (x_corr, y_corr) = if img_w > img_h {
-                (img_w / img_h, 1.0)
-            } else if img_h > img_w {
-                (1.0, img_h / img_w)
-            } else {
-                (1.0, 1.0)
-            };
-            corrections.push((x_corr, y_corr));
+                // Correction calculations (USLS RT-DETR bug workaround)
+                let size = image.size()?;
+                let img_w = size.width as f32;
+                let img_h = size.height as f32;
 
-            usls_images.push(Image::from(dynamic_image));
+                let (x_corr, y_corr) = if img_w > img_h {
+                    (img_w / img_h, 1.0)
+                } else if img_h > img_w {
+                    (1.0, img_h / img_w)
+                } else {
+                    (1.0, 1.0)
+                };
+                corrections.push((x_corr, y_corr));
+
+                usls_images.push(usls::Image::from(dynamic_image));
+            }
+
+            let preprocess_duration = chunk_start.elapsed();
+            let forward_start = std::time::Instant::now();
+            let results = self.model.forward(&usls_images)?;
+            let forward_duration = forward_start.elapsed();
+
+            tracing::debug!(
+                "Batch chunk (size {}): Preprocess: {:?}, Inference: {:?}",
+                chunk.len(),
+                preprocess_duration,
+                forward_duration
+            );
+
+            for (y, (x_correction, y_correction)) in results.into_iter().zip(corrections) {
+                let corrected_hbbs: Vec<usls::Hbb> = y
+                    .hbbs
+                    .into_iter()
+                    .map(|hbb| {
+                        let x = hbb.xmin() * x_correction;
+                        let w = hbb.width() * x_correction;
+                        let y_coord = hbb.ymin() * y_correction;
+                        let h = hbb.height() * y_correction;
+
+                        let mut new_hbb =
+                            usls::Hbb::default().with_xyxy(x, y_coord, x + w, y_coord + h);
+
+                        if let Some(conf) = hbb.confidence() {
+                            new_hbb = new_hbb.with_confidence(conf);
+                        }
+                        if let Some(id) = hbb.id() {
+                            new_hbb = new_hbb.with_id(id);
+                        }
+                        if let Some(name) = hbb.name() {
+                            new_hbb = new_hbb.with_name(name);
+                        }
+
+                        new_hbb
+                    })
+                    .collect();
+                final_batch_results.push(corrected_hbbs);
+            }
         }
 
-        let results = self.model.forward(&usls_images)?;
-
-        let mut batch_results = Vec::with_capacity(results.len());
-
-        for (y, (x_correction, y_correction)) in results.into_iter().zip(corrections) {
-            let corrected_hbbs: Vec<usls::Hbb> = y
-                .hbbs
-                .into_iter()
-                .map(|hbb| {
-                    let x = hbb.xmin() * x_correction;
-                    let w = hbb.width() * x_correction;
-                    let y_coord = hbb.ymin() * y_correction;
-                    let h = hbb.height() * y_correction;
-
-                    let mut new_hbb =
-                        usls::Hbb::default().with_xyxy(x, y_coord, x + w, y_coord + h);
-
-                    if let Some(conf) = hbb.confidence() {
-                        new_hbb = new_hbb.with_confidence(conf);
-                    }
-                    if let Some(id) = hbb.id() {
-                        new_hbb = new_hbb.with_id(id);
-                    }
-                    if let Some(name) = hbb.name() {
-                        new_hbb = new_hbb.with_name(name);
-                    }
-
-                    new_hbb
-                })
-                .collect();
-            batch_results.push(corrected_hbbs);
-        }
-
-        Ok(batch_results)
+        Ok(final_batch_results)
     }
 }
 

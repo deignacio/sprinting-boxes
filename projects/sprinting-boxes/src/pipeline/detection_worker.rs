@@ -3,7 +3,7 @@ use crate::pipeline::slicing::{
     generate_tiles, nms, transform_detection_to_image_coords, SliceConfig,
 };
 use crate::pipeline::types::{
-    BBox, CropResult, DetectedFrame, EnrichedDetection, PreprocessedFrame, ProcessingState,
+    BBox, CropResult, DetectedFrame, EnrichedDetection, Point, PreprocessedFrame, ProcessingState,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -24,6 +24,7 @@ pub fn detection_worker(
     slice_config: SliceConfig,
     state: Arc<ProcessingState>,
     target_count: Arc<std::sync::atomic::AtomicUsize>,
+    regions_to_detect: Option<Vec<String>>, // NEW
 ) -> Result<()> {
     // Load Yolo model
     let mut detector = ObjectDetector::new(model_path)
@@ -31,27 +32,62 @@ pub fn detection_worker(
     let slicing_enabled = slice_config.is_enabled();
 
     for frame in rx {
-        // Dynamic scaling check
-        let current_target = target_count.load(std::sync::atomic::Ordering::Relaxed);
-        let current_active = state
-            .active_detect_workers
-            .load(std::sync::atomic::Ordering::Relaxed);
-
-        if current_active > current_target {
-            tracing::info!(
-                "Detection worker scaling down: active ({}) > target ({})",
-                current_active,
-                current_target
-            );
-            // Exit logic?
+        // Handle empty/failed frames from upstream by passing through
+        if frame.crops.is_empty() {
+            tracing::warn!("Detection worker: passing through empty frame {}", frame.id);
         }
 
+        let default_targets = vec!["left".to_string(), "right".to_string(), "field".to_string()];
+        let targets = regions_to_detect.as_ref().unwrap_or(&default_targets);
         let start_inst = Instant::now();
         let mut results = Vec::with_capacity(frame.crops.len());
 
         for crop in frame.crops {
+            // Determine regions to detect based on crop suffix and configuration.
+            let regions_to_detect_internal = if crop.suffix == "overview" {
+                let matched_regions: Vec<_> = crop
+                    .regions
+                    .iter()
+                    .filter(|r| targets.contains(&r.name))
+                    .collect();
+
+                if matched_regions.is_empty() {
+                    tracing::warn!("No matching regions found for overview crop with targets {:?}. Skipping detection to avoid crash.", targets);
+                    results.push(CropResult {
+                        suffix: crop.suffix,
+                        detections: Vec::new(),
+                        original_polygon: crop.original_polygon,
+                        effective_polygon: crop.effective_polygon,
+                        bbox: BBox {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 1.0,
+                            h: 1.0,
+                        },
+                        image: None,
+                        regions: crop.regions,
+                    });
+                    continue;
+                }
+
+                Some(
+                    matched_regions
+                        .into_iter()
+                        .map(|r| r.polygon.clone())
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+
             let detections = if slicing_enabled {
-                detect_with_slicing(&mut detector, &crop.image, &slice_config, min_conf)?
+                detect_with_slicing(
+                    &mut detector,
+                    &crop.image,
+                    &slice_config,
+                    min_conf,
+                    regions_to_detect_internal.as_deref(),
+                )?
             } else {
                 detector.detect(&crop.image)?
             };
@@ -59,6 +95,7 @@ pub fn detection_worker(
             let enriched: Vec<EnrichedDetection> = detections
                 .into_iter()
                 .filter(|d| d.confidence().unwrap_or(0.0) >= min_conf)
+                .filter(|d| d.name().unwrap_or("") == "person")
                 .map(|d| EnrichedDetection {
                     bbox: BBox {
                         x: d.xmin(),
@@ -85,6 +122,7 @@ pub fn detection_worker(
                     h: 1.0,
                 }, // placeholder, will be set by orchestrator if needed
                 image: Some(crop.image),
+                regions: crop.regions,
             });
         }
 
@@ -141,12 +179,14 @@ fn detect_with_slicing(
     image: &opencv::core::Mat,
     config: &SliceConfig,
     min_conf: f32,
+    regions: Option<&[Vec<Point>]>,
 ) -> Result<Vec<usls::Hbb>> {
-    let tiles = generate_tiles(image, config)?;
+    let tiles = generate_tiles(image, config, regions)?;
 
     if tiles.is_empty() {
         return detector.detect(image);
     }
+    tracing::debug!("Detecting with slicing: {} tiles", tiles.len());
 
     let tile_images: Vec<opencv::core::Mat> = tiles.iter().map(|t| t.image.clone()).collect();
     let batch_results = detector.detect_batch(&tile_images)?;

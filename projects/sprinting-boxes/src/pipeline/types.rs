@@ -167,13 +167,21 @@ impl ProcessingState {
     }
 }
 
+/// Configuration for a single regional polygon within a crop
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RegionalPolygon {
+    pub name: String,
+    pub polygon: Vec<Point>, // Global or Local based on context
+}
+
 /// Configuration for a single crop region (e.g., left endzone, right endzone)
 #[derive(Clone)]
 pub struct CropConfig {
     pub bbox: BBox,
     pub original_polygon: Vec<Point>,  // Global coords
     pub effective_polygon: Vec<Point>, // Global coords (pre-computed with buffer)
-    pub suffix: String,                // e.g., "left", "right", "field"
+    pub suffix: String,                // e.g., "left", "right", "field", "overview"
+    pub regions: Vec<RegionalPolygon>, // NEW: sub-regions for selective detection
 }
 
 impl From<&CropsConfig> for Vec<CropConfig> {
@@ -186,40 +194,44 @@ impl From<&CropsConfig> for Vec<CropConfig> {
             h: b.h,
         };
 
-        vec![
-            CropConfig {
-                bbox: convert_bbox(&crops.left_end_zone.bbox),
-                original_polygon: crops
-                    .left_end_zone
-                    .original_polygon
-                    .iter()
-                    .map(convert_point)
-                    .collect(),
-                effective_polygon: crops
-                    .left_end_zone
-                    .effective_polygon
-                    .iter()
-                    .map(convert_point)
-                    .collect(),
-                suffix: "left".to_string(),
-            },
-            CropConfig {
-                bbox: convert_bbox(&crops.right_end_zone.bbox),
-                original_polygon: crops
-                    .right_end_zone
-                    .original_polygon
-                    .iter()
-                    .map(convert_point)
-                    .collect(),
-                effective_polygon: crops
-                    .right_end_zone
-                    .effective_polygon
-                    .iter()
-                    .map(convert_point)
-                    .collect(),
-                suffix: "right".to_string(),
-            },
-        ]
+        vec![CropConfig {
+            bbox: convert_bbox(&crops.overview.bbox),
+            original_polygon: crops
+                .overview
+                .original_polygon
+                .iter()
+                .map(convert_point)
+                .collect(),
+            effective_polygon: crops
+                .overview
+                .effective_polygon
+                .iter()
+                .map(convert_point)
+                .collect(),
+            suffix: "overview".to_string(),
+            regions: vec![
+                RegionalPolygon {
+                    name: "left".to_string(),
+                    polygon: crops
+                        .left_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
+                },
+                RegionalPolygon {
+                    name: "right".to_string(),
+                    polygon: crops
+                        .right_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
+                },
+                RegionalPolygon {
+                    name: "field".to_string(),
+                    polygon: crops.field_polygon.iter().map(convert_point).collect(),
+                },
+            ],
+        }]
     }
 }
 
@@ -256,6 +268,7 @@ pub struct CropData {
     pub original_polygon: Vec<Point>,  // Local crop coords
     pub effective_polygon: Vec<Point>, // Local crop coords
     pub suffix: String,
+    pub regions: Vec<RegionalPolygon>, // NEW: sub-regions transformed to local coords
 }
 
 /// A preprocessed frame containing all crop regions
@@ -285,6 +298,7 @@ pub struct CropResult {
     pub bbox: BBox,
     #[serde(skip)]
     pub image: Option<Mat>,
+    pub regions: Vec<RegionalPolygon>, // NEW: regions for downstream processing
 }
 
 /// A frame after detection has been run

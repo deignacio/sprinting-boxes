@@ -1,5 +1,6 @@
 use crate::pipeline::types::{
     BBox, CropConfig, CropData, Point, PreprocessedFrame, ProcessingState, RawFrame,
+    RegionalPolygon,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -119,28 +120,43 @@ pub fn crop_worker(
         let start_inst = Instant::now();
         let mut crop_data_list = Vec::with_capacity(configs.len());
 
-        for config in configs.iter() {
-            let mut crop = crop_normalized(&frame.mat, &config.bbox)?;
+        if !frame.mat.empty() {
+            for config in configs.iter() {
+                let mut crop = crop_normalized(&frame.mat, &config.bbox)?;
 
-            let crop_size = crop.size()?;
-            let crop_w = crop_size.width as f32;
-            let crop_h = crop_size.height as f32;
+                let crop_size = crop.size()?;
+                let crop_w = crop_size.width as f32;
+                let crop_h = crop_size.height as f32;
 
-            if enable_clahe {
-                crop = enhance_crop(&crop)?;
+                if enable_clahe {
+                    crop = enhance_crop(&crop)?;
+                }
+
+                let original_poly_local =
+                    transform_polygon(&config.original_polygon, &config.bbox, crop_w, crop_h);
+                let effective_poly_local =
+                    transform_polygon(&config.effective_polygon, &config.bbox, crop_w, crop_h);
+
+                // NEW: Transform sub-regions to local coords
+                let regions_local = config
+                    .regions
+                    .iter()
+                    .map(|r| RegionalPolygon {
+                        name: r.name.clone(),
+                        polygon: transform_polygon(&r.polygon, &config.bbox, crop_w, crop_h),
+                    })
+                    .collect();
+
+                crop_data_list.push(CropData {
+                    image: crop,
+                    original_polygon: original_poly_local,
+                    effective_polygon: effective_poly_local,
+                    suffix: config.suffix.clone(),
+                    regions: regions_local,
+                });
             }
-
-            let original_poly_local =
-                transform_polygon(&config.original_polygon, &config.bbox, crop_w, crop_h);
-            let effective_poly_local =
-                transform_polygon(&config.effective_polygon, &config.bbox, crop_w, crop_h);
-
-            crop_data_list.push(CropData {
-                image: crop,
-                original_polygon: original_poly_local,
-                effective_polygon: effective_poly_local,
-                suffix: config.suffix.clone(),
-            });
+        } else {
+            tracing::warn!("Crop worker: passing through empty frame {}", frame.id);
         }
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;

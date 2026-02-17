@@ -244,17 +244,25 @@ fn calculate_pre_point_score(
     field_count: f32,
     team_size: usize,
 ) -> f32 {
-    let min_ez_occupancy = left_count.min(right_count);
+    // Softer threshold: allow partial credit for 1 player to maintain signal
+    // during momentary dropouts or edge cases.
     let threshold = 2.0 / (team_size as f32);
+    let min_ez_occupancy = left_count.min(right_count);
 
     let balance_term = if min_ez_occupancy >= threshold {
         min_ez_occupancy
+    } else if min_ez_occupancy > 0.0 {
+        // Linear ramp for single player (assuming threshold ~= 0.28 for 7 players)
+        // Give 50% weight to a single player to keep signal alive but weak
+        min_ez_occupancy * 0.5
     } else {
         0.0
     };
 
     let ez_balance = (left_count - right_count).abs();
     let symmetry_bonus = (1.2 - ez_balance).clamp(0.0, 1.0);
+    // Field count is ignored per user request, so field_term is effectively 1.0
+    // We keep the math generic in case it's re-enabled later.
     let field_term = (1.5 - field_count).clamp(0.0, 1.0);
 
     let score = 2.0 * balance_term * symmetry_bonus * field_term;
@@ -322,32 +330,79 @@ pub fn feature_worker(
             let mut field_count_raw = 0.0;
 
             for res in &mut current_frame.results {
-                let mut count = 0;
-                for d in &mut res.detections {
-                    let x = d.bbox.x;
-                    let y = d.bbox.y;
-                    let w = d.bbox.w;
-                    let h = d.bbox.h;
-                    let bottom_center_x = x + w / 2.0;
-                    let bottom_center_y = y + h;
+                if res.suffix == "overview" {
+                    // For overview crop, we count detections per-region
+                    // Optimized counting: O(D) instead of O(D*R)
+                    // Map regions by checking each detection against available regions
+                    let mut left_c = 0;
+                    let mut right_c = 0;
+                    let mut field_c = 0;
 
-                    d.is_counted = is_point_in_polygon_robust(
-                        bottom_center_x,
-                        bottom_center_y,
-                        &res.effective_polygon,
-                    );
+                    for d in &mut res.detections {
+                        let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
+                        let bottom_center_y = d.bbox.y + d.bbox.h;
 
-                    if d.is_counted {
-                        count += 1;
+                        // Check against relevant regions
+                        for region in &res.regions {
+                            if is_point_in_polygon_robust(
+                                bottom_center_x,
+                                bottom_center_y,
+                                &region.polygon,
+                            ) {
+                                match region.name.as_str() {
+                                    "left" => {
+                                        left_c += 1;
+                                        d.is_counted = true;
+                                    }
+                                    "right" => {
+                                        right_c += 1;
+                                        d.is_counted = true;
+                                    }
+                                    "field" => {
+                                        field_c += 1;
+                                        // Field players are NOT "counted" for UI green boxes per current logic
+                                    }
+                                    _ => {}
+                                }
+                                // Optimization: A point can generally only be in one exclusive region
+                                // If regions overlap, remove this break.
+                                break;
+                            }
+                        }
                     }
-                }
 
-                let norm = count as f32 / config.team_size as f32;
-                match res.suffix.as_str() {
-                    "left" => left_count_raw = norm,
-                    "right" => right_count_raw = norm,
-                    "field" => field_count_raw = norm,
-                    _ => {}
+                    left_count_raw = left_c as f32 / config.team_size as f32;
+                    right_count_raw = right_c as f32 / config.team_size as f32;
+                    field_count_raw = field_c as f32 / config.team_size as f32;
+                } else {
+                    // Legacy/Individual crop fallback
+                    let mut count = 0;
+                    for d in &mut res.detections {
+                        let x = d.bbox.x;
+                        let y = d.bbox.y;
+                        let w = d.bbox.w;
+                        let h = d.bbox.h;
+                        let bottom_center_x = x + w / 2.0;
+                        let bottom_center_y = y + h;
+
+                        d.is_counted = is_point_in_polygon_robust(
+                            bottom_center_x,
+                            bottom_center_y,
+                            &res.effective_polygon,
+                        );
+
+                        if d.is_counted {
+                            count += 1;
+                        }
+                    }
+
+                    let norm = count as f32 / config.team_size as f32;
+                    match res.suffix.as_str() {
+                        "left" => left_count_raw = norm,
+                        "right" => right_count_raw = norm,
+                        "field" => field_count_raw = norm,
+                        _ => {}
+                    }
                 }
             }
 

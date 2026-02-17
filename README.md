@@ -10,9 +10,11 @@ Sprinting Boxes is a project designed for video analysis and tracking, specifica
 - Based on the speed of end zones emptying, inferring the team that has pulled, and thus, which team scored the last point
 
 
-## Underlying workflow and components
-
-### Game / video configuration
+## Key Features
+- **Robust Pipeline**: Handles stream errors and dropped frames gracefully without stalling, ensuring continuous processing.
+- **High Throughput**: Optimized chunk-based reading and multi-threaded worker architecture for maximum performance.
+- **Accurate Scoring**: Uses advanced point-in-polygon logic with temporal smoothing and robust count aggregation.
+- **Smart Cropping**: Dynamically tracks regions of interest (Endzones, Field) to maximize detection resolution.
 
  - Get information about the video file (resolution, frame rate)
  - Which game format is this? (7s, 5s, 4s)

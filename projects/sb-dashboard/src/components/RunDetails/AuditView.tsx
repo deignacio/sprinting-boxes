@@ -550,6 +550,28 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
         </div>
       </div>
 
+      <div
+        style={{
+          marginBottom: "16px",
+          display: "flex",
+          gap: "12px",
+          color: "#94a3b8",
+          fontSize: "0.85rem",
+          background: "#1e293b",
+          padding: "8px 16px",
+          borderRadius: "4px",
+          border: "1px solid #334155",
+        }}
+      >
+        <span>
+          Team A (Light): <strong>{settings.light_team_name}</strong>
+        </span>
+        <span style={{ color: "#475569" }}>|</span>
+        <span>
+          Team B (Dark): <strong>{settings.dark_team_name}</strong>
+        </span>
+      </div>
+
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -577,8 +599,7 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
               <th
                 style={{ padding: "12px", textAlign: "left", color: "#94a3b8" }}
               >
-                Score ({settings.light_team_name[0]}-
-                {settings.dark_team_name[0]})
+                Score ({settings.light_team_name} - {settings.dark_team_name})
               </th>
               <th
                 style={{ padding: "12px", textAlign: "left", color: "#94a3b8" }}
@@ -593,10 +614,21 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
               const isConfirmed = cliff.status === "Confirmed";
 
               let pullSide = "Unknown";
-              if (cliff.manual_side_override)
+              let pullTeam = "";
+              if (cliff.manual_side_override) {
                 pullSide = cliff.manual_side_override.toUpperCase();
-              else if (cliff.left_emptied_first) pullSide = "LEFT";
-              else if (cliff.right_emptied_first) pullSide = "RIGHT";
+                const side = cliff.manual_side_override;
+                const leftColor = cliff.left_team_color || "light";
+                const pullingColor = (side === "left") ? leftColor : (leftColor === "light" ? "dark" : "light");
+                pullTeam = pullingColor === "light" ? settings.light_team_name : settings.dark_team_name;
+              } else if (cliff.left_emptied_first) {
+                pullSide = "LEFT";
+                pullTeam = (cliff.left_team_color || "light") === "light" ? settings.light_team_name : settings.dark_team_name;
+              } else if (cliff.right_emptied_first) {
+                pullSide = "RIGHT";
+                const leftColor = cliff.left_team_color || "light";
+                pullTeam = leftColor === "light" ? settings.dark_team_name : settings.light_team_name;
+              }
 
               return (
                 <tr
@@ -674,7 +706,8 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
                     )}
                   </td>
                   <td style={{ padding: "12px", color: "#f1f5f9" }}>
-                    {pullSide}
+                    <div style={{ fontWeight: "bold" }}>{pullSide}</div>
+                    <div style={{ fontSize: "0.75rem", color: "#94a3b8" }}>{pullTeam}</div>
                   </td>
                   <td
                     style={{

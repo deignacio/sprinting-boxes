@@ -31,6 +31,7 @@ pub struct DetectionControl {
     pub min_conf: f32,
     pub slice_conf: crate::pipeline::slicing::SliceConfig,
     pub target_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub regions_to_detect: Option<Vec<String>>, // NEW: target suffixes to detect (e.g. ["left", "right"])
 }
 
 impl DetectionControl {
@@ -135,8 +136,9 @@ pub fn start_processing(
 
     let total_units = reader.frame_count()?;
 
-    // Create range pool for parallel readers (chunks of 50 sampled units)
-    let chunk_size = 50;
+    // Create range pool for parallel readers (chunks of 200 sampled units)
+    // Larger chunks reduce lock contention and seeking overhead.
+    let chunk_size = 200;
     let mut ranges = std::collections::VecDeque::new();
     for i in (0..total_units).step_by(chunk_size) {
         let end = (i + chunk_size).min(total_units);
@@ -184,6 +186,7 @@ pub fn start_processing(
         min_conf,
         slice_conf: slice_config,
         target_count: target_detect.clone(),
+        regions_to_detect: None, // Default to all regions (matching existing behavior)
     });
 
     let crop_control = Arc::new(CropControl {
@@ -216,9 +219,10 @@ pub fn start_processing(
     let (tx_f, rx_f) = crossbeam::channel::unbounded();
     let state_feat = state.clone();
     let output_dir_feat = run_context.output_dir.clone();
+    let team_size = run_context.team_size as usize;
     thread::spawn(move || {
         let config = crate::pipeline::feature::FeatureConfig {
-            team_size: 7,
+            team_size: team_size,
             lookback_frames: 10,
             lookahead_frames: 15,
             output_dir: output_dir_feat,
@@ -347,6 +351,7 @@ fn spawn_detection_worker(state: Arc<ProcessingState>, control: Arc<DetectionCon
             control.slice_conf.clone(),
             state.clone(),
             control.target_count.clone(),
+            control.regions_to_detect.clone(),
         );
 
         state.active_detect_workers.fetch_sub(1, Ordering::Relaxed);
@@ -484,6 +489,7 @@ mod tests {
             min_conf: 0.5,
             slice_conf: SliceConfig::new(640, 0.2),
             target_count: target_detect.clone(),
+            regions_to_detect: None,
         });
 
         let crop_control = Arc::new(CropControl {

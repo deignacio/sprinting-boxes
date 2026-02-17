@@ -69,7 +69,20 @@ pub fn read_worker(
                     // Increment by 1 unit completed
                     state.update_stage("reader", 1, duration_ms);
                 }
-                Err(_) => break, // End of stream or error in chunk
+                Err(e) => {
+                    // ROBUSTNESS: If we fail to read a unit, we MUST still send a frame
+                    // to preserve the ID sequence for the feature worker.
+                    tracing::error!("Reader worker: failed to read unit {}: {}", unit_id, e);
+                    let empty_frame = RawFrame {
+                        id: unit_id,
+                        mat: opencv::core::Mat::default(),
+                    };
+                    if tx.send(empty_frame).is_err() {
+                        return Ok(());
+                    }
+                    // Consider it "processed" but failed?
+                    state.update_stage("reader", 1, 0.0);
+                }
             }
         }
     }

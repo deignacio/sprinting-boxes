@@ -14,46 +14,75 @@ use std::time::Instant;
 /// This function is used for on-demand rendering in the web handler.
 pub fn draw_annotations(
     crop_img: &Mat,
-    detections: &[crate::pipeline::types::EnrichedDetection],
-    original_polygon: &[crate::pipeline::types::Point],
-    effective_polygon: &[crate::pipeline::types::Point],
+    result: &crate::pipeline::types::CropResult,
 ) -> Result<Mat> {
     let mut draw_img = crop_img.clone();
 
-    // 1. Draw Original Polygon (Light Blue)
-    let pts_orig: Vec<Point> = original_polygon
-        .iter()
-        .map(|p| Point::new(p.x as i32, p.y as i32))
-        .collect();
-    if !pts_orig.is_empty() {
-        let mut pts_vec = Vector::<Point>::new();
-        for p in pts_orig {
-            pts_vec.push(p);
+    // 1. Draw regional polygons if they exist
+    if !result.regions.is_empty() {
+        for region in result.regions.iter() {
+            let color = match region.name.as_str() {
+                "left" => Scalar::new(255.0, 100.0, 100.0, 0.0), // Light Blue/Cyan-ish
+                "right" => Scalar::new(100.0, 255.0, 100.0, 0.0), // Green
+                "field" => Scalar::new(200.0, 200.0, 200.0, 0.0), // Gray
+                _ => Scalar::new(255.0, 255.0, 255.0, 0.0),      // White
+            };
+
+            let pts: Vec<Point> = region
+                .polygon
+                .iter()
+                .map(|p| Point::new(p.x as i32, p.y as i32))
+                .collect();
+
+            if !pts.is_empty() {
+                let mut pts_vec = Vector::<Point>::new();
+                for p in pts {
+                    pts_vec.push(p);
+                }
+                let mut contours = Vector::<Vector<Point>>::new();
+                contours.push(pts_vec);
+                polylines(&mut draw_img, &contours, true, color, 2, LINE_8, 0)?;
+            }
         }
-        let mut contours = Vector::<Vector<Point>>::new();
-        contours.push(pts_vec);
-        let color = Scalar::new(255.0, 200.0, 100.0, 0.0); // Light Blue
-        polylines(&mut draw_img, &contours, true, color, 2, LINE_8, 0)?;
+    } else {
+        // Fallback to legacy single polygons
+        // 1. Draw Original Polygon (Light Blue)
+        let pts_orig: Vec<Point> = result
+            .original_polygon
+            .iter()
+            .map(|p| Point::new(p.x as i32, p.y as i32))
+            .collect();
+        if !pts_orig.is_empty() {
+            let mut pts_vec = Vector::<Point>::new();
+            for p in pts_orig {
+                pts_vec.push(p);
+            }
+            let mut contours = Vector::<Vector<Point>>::new();
+            contours.push(pts_vec);
+            let color = Scalar::new(255.0, 200.0, 100.0, 0.0); // Light Blue
+            polylines(&mut draw_img, &contours, true, color, 2, LINE_8, 0)?;
+        }
+
+        // 2. Draw Effective Polygon (Orange)
+        let pts_eff: Vec<Point> = result
+            .effective_polygon
+            .iter()
+            .map(|p| Point::new(p.x as i32, p.y as i32))
+            .collect();
+        if !pts_eff.is_empty() {
+            let mut pts_vec = Vector::<Point>::new();
+            for p in pts_eff {
+                pts_vec.push(p);
+            }
+            let mut contours = Vector::<Vector<Point>>::new();
+            contours.push(pts_vec);
+            let color = Scalar::new(0.0, 165.0, 255.0, 0.0); // Orange
+            polylines(&mut draw_img, &contours, true, color, 2, LINE_8, 0)?;
+        }
     }
 
-    // 2. Draw Effective Polygon (Orange)
-    let pts_eff: Vec<Point> = effective_polygon
-        .iter()
-        .map(|p| Point::new(p.x as i32, p.y as i32))
-        .collect();
-    if !pts_eff.is_empty() {
-        let mut pts_vec = Vector::<Point>::new();
-        for p in pts_eff {
-            pts_vec.push(p);
-        }
-        let mut contours = Vector::<Vector<Point>>::new();
-        contours.push(pts_vec);
-        let color = Scalar::new(0.0, 165.0, 255.0, 0.0); // Orange
-        polylines(&mut draw_img, &contours, true, color, 2, LINE_8, 0)?;
-    }
-
-    // 3. Draw Detections
-    for d in detections {
+    // 2. Draw Detections
+    for d in &result.detections {
         let rect = opencv::core::Rect::new(
             d.bbox.x as i32,
             d.bbox.y as i32,

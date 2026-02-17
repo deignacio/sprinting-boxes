@@ -52,8 +52,10 @@ pub struct CropConfigData {
 /// Collection of all crop configs for a run
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CropsConfig {
-    pub left_end_zone: CropConfigData,
-    pub right_end_zone: CropConfigData,
+    pub overview: CropConfigData,
+    pub left_end_zone_polygon: Vec<Point>,
+    pub right_end_zone_polygon: Vec<Point>,
+    pub field_polygon: Vec<Point>,
 }
 
 impl FieldBoundaries {

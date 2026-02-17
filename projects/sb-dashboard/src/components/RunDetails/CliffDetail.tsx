@@ -15,7 +15,7 @@ interface FrameData {
   frame_index: number;
   left_count: number;
   right_count: number;
-  // field_count is available in data but used for score calc, not displayed yet
+  field_count: number;
   pre_point_score: number;
   crop_path?: string;
 }
@@ -169,16 +169,6 @@ export default function CliffDetail({
     }
   };
 
-  const getTeamName = (side: "left" | "right") => {
-    // Default assignment if not explicit
-    const leftColor = localLeftColor || "light";
-    const rightColor = localRightColor || "dark";
-
-    const color = side === "left" ? leftColor : rightColor;
-    return color === "light"
-      ? settings.light_team_name
-      : settings.dark_team_name;
-  };
 
   return (
     <div style={{ padding: "20px", background: "#0f172a", minHeight: "100vh" }}>
@@ -232,24 +222,64 @@ export default function CliffDetail({
             </button>
           </div>
 
-          <h2 style={{ margin: 0, color: "#f1f5f9" }}>
-            Frame {cliff.frame_index} - Score: {currentScoreLight} -{" "}
-            {currentScoreDark}
-            {cliff.is_break && (
-              <span
-                style={{
-                  marginLeft: "12px",
-                  padding: "4px 8px",
-                  background: "#dc2626",
-                  color: "white",
-                  fontSize: "0.9rem",
-                  borderRadius: "4px",
-                }}
-              >
-                🔥 BREAK
+          <div style={{ textAlign: "center" }}>
+            <h2 style={{ margin: 0, color: "#f1f5f9" }}>
+              Frame {cliff.frame_index} - Score: {currentScoreLight} -{" "}
+              {currentScoreDark}
+              {cliff.is_break && (
+                <span
+                  style={{
+                    marginLeft: "12px",
+                    padding: "4px 8px",
+                    background: "#dc2626",
+                    color: "white",
+                    fontSize: "0.9rem",
+                    borderRadius: "4px",
+                  }}
+                >
+                  🔥 BREAK
+                </span>
+              )}
+            </h2>
+            <div
+              style={{
+                marginTop: "8px",
+                display: "flex",
+                gap: "16px",
+                justifyContent: "center",
+                fontSize: "0.9rem",
+              }}
+            >
+              <span style={{ color: "#94a3b8" }}>
+                Pulling Side:{" "}
+                <strong style={{ color: "#3b82f6" }}>
+                  {currentPullSide.toUpperCase()}
+                </strong>{" "}
+                (
+                {currentPullTeamColor === "light"
+                  ? settings.light_team_name
+                  : settings.dark_team_name}
+                )
               </span>
-            )}
-          </h2>
+              <span style={{ color: "#475569" }}>|</span>
+              <span style={{ color: "#94a3b8" }}>
+                Left:{" "}
+                <strong style={{ color: "#f1f5f9" }}>
+                  {currentLeftColor === "light"
+                    ? settings.light_team_name
+                    : settings.dark_team_name}
+                </strong>
+              </span>
+              <span style={{ color: "#94a3b8" }}>
+                Right:{" "}
+                <strong style={{ color: "#f1f5f9" }}>
+                  {currentRightColor === "light"
+                    ? settings.light_team_name
+                    : settings.dark_team_name}
+                </strong>
+              </span>
+            </div>
+          </div>
           <div style={{ display: "flex", gap: "8px" }}>
             <button
               onClick={() => prevCliff && onNavigate(prevCliff)}
@@ -573,7 +603,6 @@ export default function CliffDetail({
         <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
           {frames.map((frame, idx) => {
             const isCliffFrame = frame.frame_index === cliff.frame_index;
-            const highlightSide = isCliffFrame ? currentPullSide : null;
 
             return (
               <div
@@ -618,80 +647,61 @@ export default function CliffDetail({
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: enlarged ? "1fr" : "1fr 1fr",
+                    gridTemplateColumns: "1fr",
                     gap: "16px",
                   }}
                 >
-                  {["left", "right"].map((boundary) => {
-                    const isHighlighted = highlightSide === boundary;
-                    const count =
-                      boundary === "left"
-                        ? frame.left_count
-                        : frame.right_count;
-                    const teamName = getTeamName(boundary as "left" | "right");
-
-                    // "align to the right on the left crop"
-                    const bannerStyle: React.CSSProperties = {
-                      position: "absolute",
-                      bottom: 0,
-                      background: "rgba(0,0,0,0.8)",
-                      color: "white",
-                      padding: "4px 8px",
-                      fontSize: "0.85rem",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      borderTopLeftRadius: boundary === "right" ? "0" : "4px",
-                      borderTopRightRadius: boundary === "left" ? "0" : "4px",
-                    };
-
-                    if (boundary === "left") {
-                      bannerStyle.right = 0;
-                      bannerStyle.textAlign = "right";
-                    } else {
-                      bannerStyle.left = 0;
-                      bannerStyle.textAlign = "left";
-                    }
-
-                    return (
-                      <div
-                        key={boundary}
-                        style={{
-                          position: "relative",
-                          border: isHighlighted
-                            ? "3px solid #f59e0b"
-                            : "1px solid #475569",
-                          borderRadius: "4px",
-                          overflow: "hidden",
-                          cursor: "pointer",
-                        }}
-                        onClick={() => setEnlarged(!enlarged)}
-                      >
-                        <img
-                          src={`/api/runs/${runId}/crops/frame_${String(frame.frame_index).padStart(6, "0")}_${boundary}.jpg?annotate=true`}
-                          alt={`${boundary} crop`}
-                          style={{
-                            width: "100%",
-                            display: "block",
-                            minHeight: "200px",
-                            objectFit: "contain",
-                            background: "#000",
-                          }}
-                          loading="lazy"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSIjMzMzIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIvPjx0ZXh0IHg9IjUwIiB5PSI1MCIgZmlsbD0iI2ZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
-                          }}
-                        />
-                        <div style={bannerStyle}>
-                          <span style={{ fontWeight: "bold" }}>
-                            {teamName} ({boundary.toUpperCase()})
-                          </span>
-                          <span>| {count.toFixed(2)}</span>
-                        </div>
+                  <div
+                    style={{
+                      position: "relative",
+                      border: "1px solid #475569",
+                      borderRadius: "4px",
+                      overflow: "hidden",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => setEnlarged(!enlarged)}
+                  >
+                    <img
+                      src={`/api/runs/${runId}/crops/frame_${String(frame.frame_index).padStart(6, "0")}_overview.jpg?annotate=true`}
+                      alt="Overview crop"
+                      style={{
+                        width: "100%",
+                        display: "block",
+                        minHeight: "300px",
+                        objectFit: "contain",
+                        background: "#000",
+                      }}
+                      loading="lazy"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src =
+                          "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSIjMzMzIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIvPjx0ZXh0IHg9IjUwIiB5PSI1MCIgZmlsbD0iI2ZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+Tm8gSW1hZ2U8L3RleHQ+PC9zdmc+";
+                      }}
+                    />
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        background: "rgba(0,0,0,0.8)",
+                        color: "white",
+                        padding: "4px 12px",
+                        fontSize: "0.85rem",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <span style={{ fontWeight: "bold" }}>OVERVIEW</span>
+                      <div style={{ display: "flex", gap: "16px" }}>
+                        <span>L: {frame.left_count.toFixed(2)}</span>
+                        <span>R: {frame.right_count.toFixed(2)}</span>
+                        {frame.field_count > 0 && (
+                          <span>F: {frame.field_count.toFixed(2)}</span>
+                        )}
                       </div>
-                    );
-                  })}
+                    </div>
+                  </div>
                 </div>
               </div>
             );
