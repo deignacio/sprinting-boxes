@@ -144,7 +144,7 @@ pub fn crop_worker(
         }
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
-        state.update_stage("crop", frame.id, duration_ms);
+        state.update_stage("crop", 1, duration_ms);
 
         if tx
             .send(PreprocessedFrame {

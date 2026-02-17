@@ -89,7 +89,7 @@ pub fn detection_worker(
         }
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
-        state.update_stage("detect", frame.id, duration_ms);
+        state.update_stage("detect", 1, duration_ms);
 
         // Update overall processing rate
         {

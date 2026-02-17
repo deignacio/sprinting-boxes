@@ -104,10 +104,10 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
                 background: "linear-gradient(90deg, #34d399, #06b6d4)",
                 height: "100%",
                 width: `${processingProgress.total_frames > 0
-                    ? ((processingProgress.stages.finalize?.current ?? 0) /
-                      processingProgress.total_frames) *
-                    100
-                    : 0
+                  ? ((processingProgress.stages.finalize?.current ?? 0) /
+                    processingProgress.total_frames) *
+                  100
+                  : 0
                   }%`,
                 transition: "width 0.3s ease",
               }}
@@ -159,11 +159,57 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "1fr 1fr 1fr",
                 gap: "0.75rem",
                 marginBottom: "1rem",
               }}
             >
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(6, 182, 212, 0.05)",
+                  padding: "0.5rem",
+                  borderRadius: "6px",
+                }}
+              >
+                <span
+                  style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}
+                >
+                  Reader Workers
+                </span>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                  }}
+                >
+                  <button
+                    onClick={() => handleUpdateWorkers("reader", -1)}
+                    className="btn btn-sm btn-secondary"
+                  >
+                    -
+                  </button>
+                  <span
+                    style={{
+                      fontSize: "1.125rem",
+                      fontWeight: 600,
+                      color: "var(--accent-secondary)",
+                    }}
+                  >
+                    {processingProgress.active_reader_workers ?? 0}
+                  </span>
+                  <button
+                    onClick={() => handleUpdateWorkers("reader", 1)}
+                    className="btn btn-sm btn-secondary"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
               <div
                 style={{
                   display: "flex",

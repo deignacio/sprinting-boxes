@@ -481,7 +481,7 @@ pub fn feature_worker(
                 }
 
                 let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
-                state.update_stage("feature", frame.id, duration_ms);
+                state.update_stage("feature", 1, duration_ms);
 
                 if tx.send(frame).is_err() {
                     break;

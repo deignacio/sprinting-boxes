@@ -2,7 +2,7 @@
 
 use crate::pipeline::types::RawFrame;
 use crate::video::VideoReader;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -11,31 +11,70 @@ use std::sync::Arc;
 /// Returns the total number of frames read.
 use crate::pipeline::orchestrator::ProcessingState;
 
-/// Reads frames from a video source and sends them to the next pipeline stage.
+/// Reads frames from a video source in chunks from a shared pool and sends them to the pipeline.
 pub fn read_worker(
-    mut reader: Box<dyn VideoReader>,
     tx: Sender<RawFrame>,
     state: Arc<ProcessingState>,
+    control: Arc<crate::pipeline::types::ReaderControl>,
 ) -> Result<()> {
-    let mut count = 0;
+    use crate::video::ffmpeg_reader::FfmpegReader;
+    use crate::video::opencv_reader::OpencvReader;
+
+    // Each worker gets its own reader instance (must be created inside the thread)
+    let mut reader: Box<dyn VideoReader> = match control.backend.as_str() {
+        "ffmpeg" => Box::new(FfmpegReader::new(&control.video_path, control.sample_rate)?),
+        _ => Box::new(OpencvReader::new(&control.video_path, control.sample_rate)?),
+    };
 
     loop {
-        let start_inst = std::time::Instant::now();
-        match reader.next_frame() {
-            Ok(mat) => {
-                if !state.is_active.load(Ordering::Relaxed) {
-                    break;
-                }
+        // 1. Check if we should exit (orchestrator asked us to scale down or processing stopped)
+        if !state.is_active.load(Ordering::Relaxed) {
+            break;
+        }
 
-                if tx.send(RawFrame { id: count, mat }).is_err() {
-                    break; // Receiver closed
-                }
+        // Dynamic scaling check
+        let active = state.active_reader_workers.load(Ordering::Relaxed);
+        let target = control.target_count.load(Ordering::Relaxed);
+        if active > target {
+            break;
+        }
 
-                count += 1;
-                let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
-                state.update_stage("reader", count, duration_ms);
+        // 2. Get next chunk from the pool
+        let range = {
+            let mut pool = control
+                .range_pool
+                .lock()
+                .map_err(|_| anyhow!("Mutex poisoned"))?;
+            pool.pop_front()
+        };
+
+        let range = match range {
+            Some(r) => r,
+            None => break, // No more work
+        };
+
+        // 3. Seek to start of range (sampled units * skip_count = original frame index)
+        let skip_count = control.skip_count;
+        reader.seek_to_frame(range.start * skip_count)?;
+
+        // 4. Read the chunk
+        for unit_id in range {
+            if !state.is_active.load(Ordering::Relaxed) {
+                return Ok(());
             }
-            Err(_) => break,
+
+            let start_inst = std::time::Instant::now();
+            match reader.next_frame() {
+                Ok(mat) => {
+                    if tx.send(RawFrame { id: unit_id, mat }).is_err() {
+                        return Ok(()); // Receiver closed
+                    }
+                    let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
+                    // Increment by 1 unit completed
+                    state.update_stage("reader", 1, duration_ms);
+                }
+                Err(_) => break, // End of stream or error in chunk
+            }
         }
     }
 

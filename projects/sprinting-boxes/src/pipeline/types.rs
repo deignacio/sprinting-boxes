@@ -25,6 +25,8 @@ pub struct ProcessingState {
     pub error: RwLock<Option<String>>,
     /// Progress per stage (e.g., "reader", "crop", "detect", "finalize")
     pub stages: RwLock<BTreeMap<String, StageProgress>>,
+    /// Number of active reader workers
+    pub active_reader_workers: std::sync::atomic::AtomicUsize,
     /// Number of active crop workers
     pub active_crop_workers: std::sync::atomic::AtomicUsize,
     /// Number of active detection workers
@@ -87,6 +89,7 @@ impl ProcessingState {
             is_complete: AtomicBool::new(false),
             error: RwLock::new(None),
             stages: RwLock::new(stages),
+            active_reader_workers: std::sync::atomic::AtomicUsize::new(0),
             active_crop_workers: std::sync::atomic::AtomicUsize::new(0),
             active_detect_workers: std::sync::atomic::AtomicUsize::new(0),
             processing_rate: RwLock::new(0.0),
@@ -94,10 +97,10 @@ impl ProcessingState {
         }
     }
 
-    pub fn update_stage(&self, stage: &str, current: usize, ms_per_frame: f64) {
+    pub fn update_stage(&self, stage: &str, delta_count: usize, ms_per_frame: f64) {
         if let Ok(mut stages) = self.stages.write() {
             if let Some(progress) = stages.get_mut(stage) {
-                progress.current = current;
+                progress.current += delta_count;
                 // Simple exponential moving average for smoothing durations
                 if progress.ms_per_frame == 0.0 {
                     progress.ms_per_frame = ms_per_frame;
@@ -143,6 +146,7 @@ impl ProcessingState {
             "is_complete": self.is_complete.load(Ordering::Relaxed),
             "error": self.error.read().unwrap().clone(),
             "stages": stages_json,
+            "active_reader_workers": self.active_reader_workers.load(Ordering::Relaxed),
             "active_crop_workers": self.active_crop_workers.load(Ordering::Relaxed),
             "active_detect_workers": self.active_detect_workers.load(Ordering::Relaxed),
             "processing_rate": *self.processing_rate.read().unwrap(), // Internal inference rate
@@ -207,6 +211,17 @@ impl From<&CropsConfig> for Vec<CropConfig> {
     }
 }
 
+pub struct ReaderControl {
+    pub range_pool:
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<std::ops::Range<usize>>>>,
+    pub target_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub tx_v: crossbeam::channel::Sender<RawFrame>,
+    pub video_path: String,
+    pub backend: String,
+    pub sample_rate: f64,
+    pub skip_count: usize,
+}
+
 /// A raw frame read from the video source
 pub struct RawFrame {
     pub id: usize,
@@ -266,4 +281,38 @@ pub struct DetectedFrame {
     pub left_emptied_first: bool,
     pub right_emptied_first: bool,
     pub maybe_false_positive: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_monotonic_progress() {
+        let state = ProcessingState::new("test_run".to_string(), 100);
+        
+        // Initial state
+        {
+            let stages = state.stages.read().unwrap();
+            assert_eq!(stages.get("reader").unwrap().current, 0);
+            assert_eq!(stages.get("reader").unwrap().total, 100);
+        }
+
+        // First update
+        state.update_stage("reader", 10, 50.0);
+        {
+            let stages = state.stages.read().unwrap();
+            assert_eq!(stages.get("reader").unwrap().current, 10);
+            assert_eq!(stages.get("reader").unwrap().ms_per_frame, 50.0);
+        }
+
+        // Second update (concurrent style)
+        state.update_stage("reader", 5, 60.0);
+        {
+            let stages = state.stages.read().unwrap();
+            assert_eq!(stages.get("reader").unwrap().current, 15); // Monotonic increment
+            // EMA check: 50 * 0.9 + 60 * 0.1 = 45 + 6 = 51
+            assert!((stages.get("reader").unwrap().ms_per_frame - 51.0).abs() < 0.001);
+        }
+    }
 }

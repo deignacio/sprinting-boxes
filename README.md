@@ -30,6 +30,14 @@ Sprinting Boxes is a project designed for video analysis and tracking, specifica
   - End zone containment includes a padding into the field
 - Pre-point ready state score
 
+## High-Performance Processing
+
+Sprinting Boxes is optimized for 8K video analysis with a high-throughput pipeline:
+- **Parallel Video Reading**: Scalable, sharded video reading using a work-stealing range pool.
+- **Hardware Acceleration**: GPU-accelerated decoding via VideoToolbox (on macOS) with transparent CPU fallback.
+- **Dynamic Scaling**: Runtime adjustment of reader, crop, and detection workers via the dashboard.
+- **Monotonic Progress**: Accurate, non-jumping progress tracking using thread-safe atomic counters.
+
 
 ## Progress Dashboard
 

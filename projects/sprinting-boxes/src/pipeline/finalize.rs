@@ -104,7 +104,7 @@ pub fn finalize_worker(
         all_results.push(frame.clone());
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
-        state.update_stage("finalize", frame.id, duration_ms);
+        state.update_stage("finalize", 1, duration_ms);
     }
 
     // Save final detections.json

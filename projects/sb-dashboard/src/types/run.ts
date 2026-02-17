@@ -36,6 +36,7 @@ export interface ProcessingProgress {
   is_complete: boolean;
   error: string | null;
   stages: Record<string, StageProgress>;
+  active_reader_workers?: number;
   active_crop_workers?: number;
   active_detect_workers?: number;
   processing_rate?: number;

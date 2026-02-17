@@ -224,15 +224,16 @@ impl FfmpegReader {
                 let c = &*config;
                 tracing::debug!(
                     "FfmpegReader: hw_config[{}]: device_type={:?}, methods={}, pix_fmt={:?}",
-                    idx, c.device_type, c.methods, c.pix_fmt
+                    idx,
+                    c.device_type,
+                    c.methods,
+                    c.pix_fmt
                 );
-                
+
                 // We prefer the HW_DEVICE_CTX method which allows us to manage
                 // the hardware device lifecycle via AVBufferRef.
                 if c.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
-                    && (c.methods as u32
-                        & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as u32)
-                        != 0
+                    && (c.methods as u32 & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as u32) != 0
                 {
                     matched_pix_fmt = Some(c.pix_fmt);
                     break;
@@ -289,9 +290,7 @@ impl FfmpegReader {
                 Ok(()) => {
                     return Ok(());
                 }
-                Err(ffmpeg_next::Error::Other {
-                    errno: ffi::EAGAIN,
-                }) => {
+                Err(ffmpeg_next::Error::Other { errno: ffi::EAGAIN }) => {
                     // Decoder needs more data — feed packets below
                 }
                 Err(e) => return Err(anyhow!("Decoder error: {}", e)),
@@ -361,7 +360,6 @@ impl FfmpegReader {
         }
         Ok(self.scaler.as_mut().unwrap())
     }
-
 
     /// Process a decoded frame: transfer from GPU if needed, and scale/convert to BGR24.
     fn process_decoded_frame(
@@ -466,9 +464,9 @@ impl VideoReader for FfmpegReader {
         // 1. Get the raw frame to be sampled
         // Ensure skip hint is reset to default so we get a complete decoded frame
         self.set_skip_frame_hint(ffmpeg_next::codec::discard::Discard::Default);
-        
+
         let raw_frame = self.receive_next_raw_owned()?;
-        
+
         // 2. ONLY process this frame (GPU->CPU transfer, scaling)
         let processed_frame = self.process_decoded_frame(raw_frame)?;
         let bgr_mat = bgr_frame_to_mat(&processed_frame)?;
