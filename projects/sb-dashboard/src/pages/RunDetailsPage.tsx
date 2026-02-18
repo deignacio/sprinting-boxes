@@ -7,11 +7,12 @@ import DependenciesCard from "../components/RunDetails/DependenciesCard";
 import ProcessingCard from "../components/RunDetails/ProcessingCard";
 import AuditView from "../components/RunDetails/AuditView";
 import CliffDetail from "../components/RunDetails/CliffDetail";
+import FrameViewer from "../components/RunDetails/FrameViewer";
 import { useRunDetails } from "../hooks/useRunDetails";
 import { useVideoProcessing } from "../hooks/useVideoProcessing";
 import { type CliffData, type AuditSettings } from "../utils/auditUtils";
 
-type ViewState = "overview" | "audit" | "cliff_detail";
+type ViewState = "overview" | "audit" | "cliff_detail" | "frame_viewer";
 
 const RunDetailsPage: React.FC = () => {
   const { id } = useParams();
@@ -141,65 +142,98 @@ const RunDetailsPage: React.FC = () => {
         />
       ) : (
         <>
-          <RunHeader
-            run={run}
-            isEditing={isEditing}
-            setIsEditing={setIsEditing}
-            editName={editName}
-            setEditName={setEditName}
-            isSaving={isSaving}
-            onSave={handleSave}
-            onBack={() => navigate("/")}
-          />
-
-          {/* Tab Navigation */}
           <div
             style={{
-              marginBottom: "2rem",
-              borderBottom: "1px solid #334155",
-              display: "flex",
-              gap: "2rem",
+              position: "sticky",
+              top: 0,
+              zIndex: 50,
+              backgroundColor: "var(--bg-primary)",
+              margin: "-2rem -2rem 0 -2rem", // Compensate for container padding
+              padding: "1rem 2rem 0 2rem",   // Reduced top padding
+              borderBottom: "1px solid #334155", // Move border here for cleanliness
             }}
           >
-            <button
-              onClick={() => setView("overview")}
+            <RunHeader
+              run={run}
+              isEditing={isEditing}
+              setIsEditing={setIsEditing}
+              editName={editName}
+              setEditName={setEditName}
+              isSaving={isSaving}
+              onSave={handleSave}
+              onBack={() => navigate("/")}
+            />
+
+            {/* Tab Navigation */}
+            <div
               style={{
-                padding: "0.75rem 0",
-                background: "transparent",
-                color: view === "overview" ? "#34d399" : "#94a3b8",
-                border: "none",
-                borderBottom:
-                  view === "overview"
-                    ? "2px solid #34d399"
-                    : "2px solid transparent",
-                cursor: "pointer",
-                fontSize: "1rem",
-                fontWeight: view === "overview" ? 600 : 400,
+                display: "flex",
+                gap: "1.5rem",
+                backgroundColor: "var(--bg-primary)",
+                marginTop: "0.5rem",
               }}
             >
-              Overview
-            </button>
-            <button
-              onClick={() => {
-                setView("audit");
-                loadAuditData();
-              }}
-              style={{
-                padding: "0.75rem 0",
-                background: "transparent",
-                color: view === "audit" ? "#34d399" : "#94a3b8",
-                border: "none",
-                borderBottom:
-                  view === "audit"
-                    ? "2px solid #34d399"
-                    : "2px solid transparent",
-                cursor: "pointer",
-                fontSize: "1rem",
-                fontWeight: view === "audit" ? 600 : 400,
-              }}
-            >
-              Point Audit
-            </button>
+              <button
+                onClick={() => setView("overview")}
+                style={{
+                  padding: "0.5rem 0",
+                  background: "transparent",
+                  color: view === "overview" ? "#34d399" : "#94a3b8",
+                  border: "none",
+                  borderBottom:
+                    view === "overview"
+                      ? "2px solid #34d399"
+                      : "2px solid transparent",
+                  cursor: "pointer",
+                  fontSize: "0.875rem",
+                  fontWeight: view === "overview" ? 600 : 400,
+                }}
+              >
+                Overview
+              </button>
+              <button
+                onClick={() => {
+                  setView("audit");
+                  loadAuditData();
+                }}
+                style={{
+                  padding: "0.5rem 0",
+                  background: "transparent",
+                  color: view === "audit" ? "#34d399" : "#94a3b8",
+                  border: "none",
+                  borderBottom:
+                    view === "audit"
+                      ? "2px solid #34d399"
+                      : "2px solid transparent",
+                  cursor: "pointer",
+                  fontSize: "0.875rem",
+                  fontWeight: view === "audit" ? 600 : 400,
+                }}
+              >
+                Point Audit
+              </button>
+              <button
+                onClick={() => {
+                  setView("frame_viewer");
+                  loadAuditData();
+                }}
+                style={{
+                  padding: "0.5rem 0",
+                  background: "transparent",
+                  color: view === "frame_viewer" ? "#34d399" : "#94a3b8",
+                  border: "none",
+                  borderBottom:
+                    view === "frame_viewer"
+                      ? "2px solid #34d399"
+                      : "2px solid transparent",
+                  cursor: "pointer",
+                  fontSize: "0.875rem",
+                  fontWeight: view === "frame_viewer" ? 600 : 400,
+                }}
+              >
+                Frame Viewer
+              </button>
+            </div>
           </div>
 
           {view === "overview" && (
@@ -239,8 +273,21 @@ const RunDetailsPage: React.FC = () => {
             </div>
           )}
 
+
           {view === "audit" && (
             <AuditView runId={id!} onCliffClick={handleCliffClick} />
+          )}
+
+          {view === "frame_viewer" && (
+            !auditSettings ? (
+              <div className="p-8 text-center text-slate-400">Loading audit data...</div>
+            ) : (
+              <FrameViewer
+                runId={id!}
+                allCliffs={allCliffs}
+                settings={auditSettings}
+              />
+            )
           )}
         </>
       )}
