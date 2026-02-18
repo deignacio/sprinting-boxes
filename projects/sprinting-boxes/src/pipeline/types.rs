@@ -285,7 +285,10 @@ pub struct EnrichedDetection {
     pub class_id: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_name: Option<String>,
-    pub is_counted: bool,
+    /// Whether the detection is in an end zone (left/right) - counts towards score
+    pub in_end_zone: bool,
+    /// Whether the detection is in the field area - counts towards CoM
+    pub in_field: bool,
 }
 
 /// Result for a single crop region including detections
@@ -316,6 +319,13 @@ pub struct DetectedFrame {
     pub left_emptied_first: bool,
     pub right_emptied_first: bool,
     pub maybe_false_positive: bool,
+    // CoM and StdDev features
+    pub com_x: Option<f32>,
+    pub com_y: Option<f32>,
+    pub std_dev: Option<f32>,
+    pub com_delta_x: Option<f32>,
+    pub com_delta_y: Option<f32>,
+    pub std_dev_delta: Option<f32>,
 }
 
 #[cfg(test)]

@@ -235,6 +235,9 @@ impl CliffDetectorState {
 struct FrameHistory {
     left_count: f32,
     right_count: f32,
+    com_x: Option<f32>,
+    com_y: Option<f32>,
+    std_dev: Option<f32>,
 }
 
 /// Calculate pre-point score based on normalized detection counts
@@ -299,7 +302,7 @@ pub fn feature_worker(
     let mut features_csv = std::fs::File::create(&features_path)?;
     writeln!(
         features_csv,
-        "frame_index,left_count,right_count,field_count,pre_point_score,is_cliff"
+        "frame_index,left_count,right_count,field_count,pre_point_score,is_cliff,com_x,com_y,distribution_std_dev,com_delta_x,com_delta_y,std_dev_delta"
     )?;
 
     let mut points_csv = std::fs::File::create(&points_path)?;
@@ -324,102 +327,19 @@ pub fn feature_worker(
         input_buffer.insert(frame.id, frame);
 
         while let Some(mut current_frame) = input_buffer.remove(&next_input_id) {
-            // Calculate normalized counts
-            let mut left_count_raw = 0.0;
-            let mut right_count_raw = 0.0;
-            let mut field_count_raw = 0.0;
+            // Calculate metrics (counts, CoM, StdDev)
+            calculate_frame_metrics(&mut current_frame, &config);
 
-            for res in &mut current_frame.results {
-                if res.suffix == "overview" {
-                    // For overview crop, we count detections per-region
-                    // Optimized counting: O(D) instead of O(D*R)
-                    // Map regions by checking each detection against available regions
-                    let mut left_c = 0;
-                    let mut right_c = 0;
-                    let mut field_c = 0;
-
-                    for d in &mut res.detections {
-                        let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
-                        let bottom_center_y = d.bbox.y + d.bbox.h;
-
-                        // Check against relevant regions
-                        for region in &res.regions {
-                            if is_point_in_polygon_robust(
-                                bottom_center_x,
-                                bottom_center_y,
-                                &region.polygon,
-                            ) {
-                                match region.name.as_str() {
-                                    "left" => {
-                                        left_c += 1;
-                                        d.is_counted = true;
-                                    }
-                                    "right" => {
-                                        right_c += 1;
-                                        d.is_counted = true;
-                                    }
-                                    "field" => {
-                                        field_c += 1;
-                                        // Field players are NOT "counted" for UI green boxes per current logic
-                                    }
-                                    _ => {}
-                                }
-                                // Optimization: A point can generally only be in one exclusive region
-                                // If regions overlap, remove this break.
-                                break;
-                            }
-                        }
-                    }
-
-                    left_count_raw = left_c as f32 / config.team_size as f32;
-                    right_count_raw = right_c as f32 / config.team_size as f32;
-                    field_count_raw = field_c as f32 / config.team_size as f32;
-                } else {
-                    // Legacy/Individual crop fallback
-                    let mut count = 0;
-                    for d in &mut res.detections {
-                        let x = d.bbox.x;
-                        let y = d.bbox.y;
-                        let w = d.bbox.w;
-                        let h = d.bbox.h;
-                        let bottom_center_x = x + w / 2.0;
-                        let bottom_center_y = y + h;
-
-                        d.is_counted = is_point_in_polygon_robust(
-                            bottom_center_x,
-                            bottom_center_y,
-                            &res.effective_polygon,
-                        );
-
-                        if d.is_counted {
-                            count += 1;
-                        }
-                    }
-
-                    let norm = count as f32 / config.team_size as f32;
-                    match res.suffix.as_str() {
-                        "left" => left_count_raw = norm,
-                        "right" => right_count_raw = norm,
-                        "field" => field_count_raw = norm,
-                        _ => {}
-                    }
-                }
-            }
-
-            current_frame.left_count = left_count_raw;
-            current_frame.right_count = right_count_raw;
-            current_frame.field_count = field_count_raw;
-            current_frame.pre_point_score = calculate_pre_point_score(
-                left_count_raw,
-                right_count_raw,
-                field_count_raw,
-                config.team_size,
-            );
+            // Calculate deltas
+            calculate_deltas(&mut current_frame, history_buffer.last());
 
             // Record history
             history_buffer.push(FrameHistory {
-                left_count: left_count_raw,
-                right_count: right_count_raw,
+                left_count: current_frame.left_count,
+                right_count: current_frame.right_count,
+                com_x: current_frame.com_x,
+                com_y: current_frame.com_y,
+                std_dev: current_frame.std_dev,
             });
 
             // Run cliff detector
@@ -519,13 +439,19 @@ pub fn feature_worker(
                 // Write to CSV files
                 writeln!(
                     features_csv,
-                    "{},{:.3},{:.3},{:.3},{:.3},{}",
+                    "{},{:.5},{:.5},{:.3},{:.3},{},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}",
                     frame.id,
                     frame.left_count,
                     frame.right_count,
                     frame.field_count,
                     frame.pre_point_score,
-                    if frame.is_cliff { 1 } else { 0 }
+                    if frame.is_cliff { 1 } else { 0 },
+                    frame.com_x.unwrap_or(-1.0),
+                    frame.com_y.unwrap_or(-1.0),
+                    frame.std_dev.unwrap_or(-1.0),
+                    frame.com_delta_x.unwrap_or(0.0),
+                    frame.com_delta_y.unwrap_or(0.0),
+                    frame.std_dev_delta.unwrap_or(0.0),
                 )?;
 
                 if frame.is_cliff {
@@ -558,40 +484,18 @@ pub fn feature_worker(
     while !input_buffer.is_empty() {
         if let Some(mut current_frame) = input_buffer.remove(&next_input_id) {
             // Process the frame
-            let mut left_count_raw = 0.0;
-            let mut right_count_raw = 0.0;
-            let mut field_count_raw = 0.0;
-            for res in &mut current_frame.results {
-                let mut count = 0;
-                for d in &mut res.detections {
-                    let bc_x = d.bbox.x + d.bbox.w / 2.0;
-                    let bc_y = d.bbox.y + d.bbox.h;
-                    d.is_counted = is_point_in_polygon_robust(bc_x, bc_y, &res.effective_polygon);
-                    if d.is_counted {
-                        count += 1;
-                    }
-                }
-                let norm = count as f32 / config.team_size as f32;
-                match res.suffix.as_str() {
-                    "left" => left_count_raw = norm,
-                    "right" => right_count_raw = norm,
-                    "field" => field_count_raw = norm,
-                    _ => {}
-                }
-            }
-            current_frame.left_count = left_count_raw;
-            current_frame.right_count = right_count_raw;
-            current_frame.field_count = field_count_raw;
-            current_frame.pre_point_score = calculate_pre_point_score(
-                left_count_raw,
-                right_count_raw,
-                field_count_raw,
-                config.team_size,
-            );
+            // Calculate metrics
+            calculate_frame_metrics(&mut current_frame, &config);
 
+            // Calculate deltas
+            calculate_deltas(&mut current_frame, history_buffer.last());
+            // Record history
             history_buffer.push(FrameHistory {
-                left_count: left_count_raw,
-                right_count: right_count_raw,
+                left_count: current_frame.left_count,
+                right_count: current_frame.right_count,
+                com_x: current_frame.com_x,
+                com_y: current_frame.com_y,
+                std_dev: current_frame.std_dev,
             });
             let cliff_results = cliff_state.push(current_frame.id, current_frame.pre_point_score);
             lookahead_buffer.push(current_frame);
@@ -616,13 +520,19 @@ pub fn feature_worker(
         // Write final frames to CSV
         writeln!(
             features_csv,
-            "{},{:.3},{:.3},{:.3},{:.3},{}",
+            "{},{:.3},{:.3},{:.3},{:.3},{},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}",
             frame.id,
             frame.left_count,
             frame.right_count,
             frame.field_count,
             frame.pre_point_score,
-            if frame.is_cliff { 1 } else { 0 }
+            if frame.is_cliff { 1 } else { 0 },
+            frame.com_x.unwrap_or(-1.0),
+            frame.com_y.unwrap_or(-1.0),
+            frame.std_dev.unwrap_or(-1.0),
+            frame.com_delta_x.unwrap_or(0.0),
+            frame.com_delta_y.unwrap_or(0.0),
+            frame.std_dev_delta.unwrap_or(0.0),
         )?;
 
         if frame.is_cliff {
@@ -641,4 +551,171 @@ pub fn feature_worker(
 
     tracing::info!("Feature worker finished gracefully");
     Ok(())
+}
+
+/// Helper: Calculate metrics for a single frame
+fn calculate_frame_metrics(frame: &mut DetectedFrame, config: &FeatureConfig) {
+    let mut left_count_raw = 0.0;
+    let mut right_count_raw = 0.0;
+    let mut field_count_raw = 0.0;
+
+    let mut points_x = Vec::new();
+    let mut points_y = Vec::new();
+    let mut crop_w = 1.0;
+    let mut crop_h = 1.0;
+
+    for res in &mut frame.results {
+        if res.suffix == "overview" {
+            crop_w = res.bbox.w;
+            crop_h = res.bbox.h;
+
+            let mut left_c = 0;
+            let mut right_c = 0;
+            let mut field_c = 0;
+
+            for d in &mut res.detections {
+                let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
+                let bottom_center_y = d.bbox.y + d.bbox.h;
+
+                for region in &res.regions {
+                    if is_point_in_polygon_robust(bottom_center_x, bottom_center_y, &region.polygon)
+                    {
+                        match region.name.as_str() {
+                            "left" => {
+                                left_c += 1;
+                                d.in_end_zone = true;
+                            }
+                            "right" => {
+                                right_c += 1;
+                                d.in_end_zone = true;
+                            }
+                            "field" => {
+                                field_c += 1;
+                                d.in_field = true;
+                            }
+                            _ => {}
+                        }
+                        break;
+                    }
+                }
+
+                if d.in_end_zone || d.in_field {
+                    points_x.push(bottom_center_x);
+                    points_y.push(bottom_center_y);
+                }
+            }
+
+            left_count_raw = left_c as f32 / config.team_size as f32;
+            right_count_raw = right_c as f32 / config.team_size as f32;
+            field_count_raw = field_c as f32 / config.team_size as f32;
+        } else {
+            // Legacy/Individual crop
+            if res.bbox.w > 0.0 {
+                crop_w = res.bbox.w;
+                crop_h = res.bbox.h;
+            }
+
+            let mut count = 0;
+            for d in &mut res.detections {
+                let x = d.bbox.x;
+                let y = d.bbox.y;
+                let w = d.bbox.w;
+                let h = d.bbox.h;
+                let bottom_center_x = x + w / 2.0;
+                let bottom_center_y = y + h;
+
+                let in_roi = is_point_in_polygon_robust(
+                    bottom_center_x,
+                    bottom_center_y,
+                    &res.effective_polygon,
+                );
+
+                if in_roi {
+                    match res.suffix.as_str() {
+                        "left" | "right" => {
+                            d.in_end_zone = true;
+                            count += 1;
+                        }
+                        "field" => {
+                            d.in_field = true;
+                            count += 1;
+                        }
+                        _ => {}
+                    }
+                    points_x.push(bottom_center_x);
+                    points_y.push(bottom_center_y);
+                }
+            }
+
+            let norm = count as f32 / config.team_size as f32;
+            match res.suffix.as_str() {
+                "left" => left_count_raw = norm,
+                "right" => right_count_raw = norm,
+                "field" => field_count_raw = norm,
+                _ => {}
+            }
+        }
+    }
+
+    frame.left_count = left_count_raw;
+    frame.right_count = right_count_raw;
+    frame.field_count = field_count_raw;
+    frame.pre_point_score = calculate_pre_point_score(
+        left_count_raw,
+        right_count_raw,
+        field_count_raw,
+        config.team_size,
+    );
+
+    // CoM/StdDev
+    let (com_x, com_y, std_dev) = if !points_x.is_empty() {
+        let count = points_x.len() as f32;
+        let sum_x: f32 = points_x.iter().sum();
+        let sum_y: f32 = points_y.iter().sum();
+        let cx = sum_x / count;
+        let cy = sum_y / count;
+
+        let variance_sum: f32 = points_x
+            .iter()
+            .zip(points_y.iter())
+            .map(|(px, py)| {
+                let dx = px - cx;
+                let dy = py - cy;
+                dx * dx + dy * dy
+            })
+            .sum();
+        let sd_raw = (variance_sum / count).sqrt();
+
+        // Normalization
+        let diagonal = (crop_w * crop_w + crop_h * crop_h).sqrt();
+        let w = if crop_w > 0.0 { crop_w } else { 1.0 };
+        let h = if crop_h > 0.0 { crop_h } else { 1.0 };
+        let diag_norm = if diagonal > 0.0 { diagonal / 3.0 } else { 1.0 };
+
+        (Some(cx / w), Some(cy / h), Some(sd_raw / diag_norm))
+    } else {
+        (None, None, None)
+    };
+
+    frame.com_x = com_x;
+    frame.com_y = com_y;
+    frame.std_dev = std_dev;
+}
+
+/// Helper: Calculate deltas based on history
+fn calculate_deltas(frame: &mut DetectedFrame, prev_history: Option<&FrameHistory>) {
+    if let Some(prev) = prev_history {
+        if let (Some(cx), Some(cy), Some(sd), Some(pcx), Some(pcy), Some(psd)) = (
+            frame.com_x,
+            frame.com_y,
+            frame.std_dev,
+            prev.com_x,
+            prev.com_y,
+            prev.std_dev,
+        ) {
+            frame.com_delta_x = Some(cx - pcx);
+            frame.com_delta_y = Some(cy - pcy);
+            frame.std_dev_delta = Some(sd - psd);
+        }
+    }
 }

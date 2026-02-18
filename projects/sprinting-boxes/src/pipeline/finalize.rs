@@ -3,7 +3,8 @@ use anyhow::Result;
 use crossbeam::channel::Receiver;
 use opencv::core::Mat;
 use opencv::core::{Point, Scalar, Vector};
-use opencv::imgproc::{polylines, rectangle, LINE_8};
+use opencv::imgproc::{circle, polylines, rectangle, LINE_8};
+use opencv::prelude::MatTraitConst;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -15,6 +16,7 @@ use std::time::Instant;
 pub fn draw_annotations(
     crop_img: &Mat,
     result: &crate::pipeline::types::CropResult,
+    frame: Option<&DetectedFrame>,
 ) -> Result<Mat> {
     let mut draw_img = crop_img.clone();
 
@@ -90,13 +92,62 @@ pub fn draw_annotations(
             d.bbox.h as i32,
         );
 
-        let color = if d.is_counted {
-            Scalar::new(0.0, 255.0, 0.0, 0.0) // Green
+        let color = if d.in_end_zone {
+            Scalar::new(0.0, 255.0, 0.0, 0.0) // Green (End Zone)
+        } else if d.in_field {
+            Scalar::new(255.0, 0.0, 0.0, 0.0) // Blue (Field)
         } else {
-            Scalar::new(0.0, 0.0, 255.0, 0.0) // Red
+            Scalar::new(0.0, 0.0, 255.0, 0.0) // Red (Neither)
         };
 
         rectangle(&mut draw_img, rect, color, 2, LINE_8, 0)?;
+    }
+
+    // 3. Draw CoM and StdDev (if frame provided and crop is overview)
+    if let Some(f) = frame {
+        if result.suffix == "overview" {
+            if let (Some(cx_norm), Some(cy_norm), Some(std_dev_norm)) =
+                (f.com_x, f.com_y, f.std_dev)
+            {
+                let w = draw_img.cols() as f32;
+                let h = draw_img.rows() as f32;
+                let cx = (cx_norm * w) as i32;
+                let cy = (cy_norm * h) as i32;
+
+                // StdDev Visualization
+                // Normalized std_dev means 1.0 = (diagonal / 3.0)
+                let diagonal = (w * w + h * h).sqrt();
+                let normalization_factor = diagonal / 3.0;
+                let raw_std_dev = std_dev_norm * normalization_factor;
+
+                // Requested scaling: "1/8 of the current length"
+                let radius = (raw_std_dev / 8.0) as i32;
+
+                if radius > 0 {
+                    // Outlined circle for StdDev
+                    circle(
+                        &mut draw_img,
+                        Point { x: cx, y: cy },
+                        radius,
+                        Scalar::new(0.0, 165.0, 255.0, 0.0), // Orange
+                        2,
+                        LINE_8,
+                        0,
+                    )?;
+                }
+
+                // CoM Dot (Filled)
+                circle(
+                    &mut draw_img,
+                    Point { x: cx, y: cy },
+                    4,                                   // Fixed small radius for the center point
+                    Scalar::new(0.0, 165.0, 255.0, 0.0), // Orange
+                    -1,                                  // Filled
+                    LINE_8,
+                    0,
+                )?;
+            }
+        }
     }
 
     Ok(draw_img)

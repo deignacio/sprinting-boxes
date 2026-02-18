@@ -544,6 +544,13 @@ pub struct FeatureData {
     pub field_count: f32,
     pub pre_point_score: f32,
     pub crop_path: Option<String>,
+    // New features
+    pub com_x: Option<f32>,
+    pub com_y: Option<f32>,
+    pub std_dev: Option<f32>,
+    pub com_delta_x: Option<f32>,
+    pub com_delta_y: Option<f32>,
+    pub std_dev_delta: Option<f32>,
 }
 
 pub async fn serve_run_crop_handler(
@@ -640,8 +647,9 @@ pub async fn serve_run_crop_handler(
             .ok_or(StatusCode::NOT_FOUND)?;
 
         // Draw annotations
-        let annotated_img = crate::pipeline::finalize::draw_annotations(&img, crop_result)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let annotated_img =
+            crate::pipeline::finalize::draw_annotations(&img, crop_result, Some(frame))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // Encode to JPEG
         let mut buf = opencv::core::Vector::<u8>::new();
@@ -712,6 +720,22 @@ pub async fn get_features_handler(
         let right_count: f32 = parts[2].parse().unwrap_or(0.0);
         let field_count: f32 = parts[3].parse().unwrap_or(0.0);
         let pre_point_score: f32 = parts[4].parse().unwrap_or(0.0);
+        // Parse new features if available (backwards compat)
+        let com_x = parts
+            .get(6)
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|&v| v != -1.0);
+        let com_y = parts
+            .get(7)
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|&v| v != -1.0);
+        let std_dev = parts
+            .get(8)
+            .and_then(|s| s.parse::<f32>().ok())
+            .filter(|&v| v != -1.0);
+        let com_delta_x = parts.get(9).and_then(|s| s.parse::<f32>().ok());
+        let com_delta_y = parts.get(10).and_then(|s| s.parse::<f32>().ok());
+        let std_dev_delta = parts.get(11).and_then(|s| s.parse::<f32>().ok());
 
         features.push(FeatureData {
             frame_index,
@@ -720,6 +744,12 @@ pub async fn get_features_handler(
             field_count,
             pre_point_score,
             crop_path: None,
+            com_x,
+            com_y,
+            std_dev,
+            com_delta_x,
+            com_delta_y,
+            std_dev_delta,
         });
     }
 

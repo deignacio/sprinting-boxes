@@ -7,6 +7,7 @@ use crate::pipeline::types::{
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
+use opencv::prelude::MatTraitConst;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -106,7 +107,8 @@ pub fn detection_worker(
                     confidence: d.confidence().unwrap_or(0.0),
                     class_id: d.id().unwrap_or(0),
                     class_name: d.name().map(|s| s.to_string()),
-                    is_counted: false,
+                    in_end_zone: false,
+                    in_field: false,
                 })
                 .collect();
 
@@ -118,9 +120,9 @@ pub fn detection_worker(
                 bbox: BBox {
                     x: 0.0,
                     y: 0.0,
-                    w: 1.0,
-                    h: 1.0,
-                }, // placeholder, will be set by orchestrator if needed
+                    w: crop.image.cols() as f32,
+                    h: crop.image.rows() as f32,
+                },
                 image: Some(crop.image),
                 regions: crop.regions,
             });
@@ -153,6 +155,12 @@ pub fn detection_worker(
                 left_emptied_first: false,
                 right_emptied_first: false,
                 maybe_false_positive: false,
+                com_x: None,
+                com_y: None,
+                std_dev: None,
+                com_delta_x: None,
+                com_delta_y: None,
+                std_dev_delta: None,
             })
             .is_err()
         {

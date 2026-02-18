@@ -7,6 +7,13 @@ interface FeatureData {
     right_count: number;
     field_count: number;
     pre_point_score: number;
+    // New features
+    com_x?: number;
+    com_y?: number;
+    std_dev?: number;
+    com_delta_x?: number;
+    com_delta_y?: number;
+    std_dev_delta?: number;
 }
 
 interface EnrichedFrame extends FeatureData {
@@ -288,13 +295,32 @@ const FrameViewer: React.FC<FrameViewerProps> = ({
                                         color: "#fff",
                                         padding: "8px 12px",
                                         display: "flex",
-                                        gap: "16px",
-                                        fontFamily: "monospace"
+                                        flexDirection: "column",
+                                        gap: "4px",
+                                        fontFamily: "monospace",
+                                        fontSize: "0.85rem"
                                     }}>
-                                        <span>L: {frame.left_count.toFixed(2)}</span>
-                                        <span>R: {frame.right_count.toFixed(2)}</span>
-                                        <span>F: {frame.field_count.toFixed(2)}</span>
+                                        <div style={{ display: "flex", gap: "16px" }}>
+                                            <span>L: {frame.left_count.toFixed(2)}</span>
+                                            <span>R: {frame.right_count.toFixed(2)}</span>
+                                            <span>F: {frame.field_count.toFixed(2)}</span>
+                                        </div>
+                                        {frame.com_x != null && frame.com_y != null && (
+                                            <div style={{ display: "flex", gap: "16px", color: "#fdba74" }}>
+                                                <span>CoM: ({frame.com_x.toFixed(2)}, {frame.com_y.toFixed(2)})</span>
+                                                {frame.std_dev != null && <span>σ: {frame.std_dev.toFixed(2)}</span>}
+                                                {frame.com_delta_x != null && (
+                                                    <span>ΔCoM: ({frame.com_delta_x.toFixed(3)}, {frame.com_delta_y?.toFixed(3)})</span>
+                                                )}
+                                                {frame.std_dev_delta != null && <span>Δσ: {frame.std_dev_delta.toFixed(3)}</span>}
+                                            </div>
+                                        )}
                                     </div>
+
+                                    {/* CoM/StdDev are now rendered by backend */
+                                        false && frame.com_x != null && frame.com_y != null && frame.std_dev != null && (
+                                            <></>
+                                        )}
                                 </div>
                             </div>
                         );
