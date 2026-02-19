@@ -159,6 +159,12 @@ pub fn crop_worker(
                     effective_polygon: effective_poly_local,
                     suffix: config.suffix.clone(),
                     regions: regions_local,
+                    source_bbox: BBox {
+                        x: config.bbox.x,
+                        y: config.bbox.y,
+                        w: config.bbox.w,
+                        h: config.bbox.h,
+                    },
                 });
             }
         } else {

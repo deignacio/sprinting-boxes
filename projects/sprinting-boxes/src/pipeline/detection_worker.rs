@@ -3,7 +3,7 @@ use crate::pipeline::slicing::{
     generate_tiles, nms, transform_detection_to_image_coords, SliceConfig,
 };
 use crate::pipeline::types::{
-    BBox, CropResult, DetectedFrame, EnrichedDetection, Point, PreprocessedFrame, ProcessingState,
+    BBox, CropResult, DetectedFrame, EnrichedDetection, PreprocessedFrame, ProcessingState,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -41,11 +41,18 @@ pub fn detection_worker(
         let default_targets = vec!["left".to_string(), "right".to_string(), "field".to_string()];
         let targets = regions_to_detect.as_ref().unwrap_or(&default_targets);
         let start_inst = Instant::now();
-        let mut results = Vec::with_capacity(frame.crops.len());
 
-        for crop in frame.crops {
-            // Determine regions to detect based on crop suffix and configuration.
-            let regions_to_detect_internal = if crop.suffix == "overview" {
+        // 1. Tile Generation Phase: Collect tiles from all crops
+        struct QueuedTile {
+            crop_index: usize,
+            tile: crate::pipeline::slicing::Tile,
+        }
+        let mut all_queued_tiles = Vec::new();
+
+        for (crop_index, crop) in frame.crops.iter().enumerate() {
+            let regions_to_tile = if crop.suffix == "overview" {
+                // Overview: only tile in field region (EZ crops handle end zones)
+                // However, we check if "field" is in targets.
                 let matched_regions: Vec<_> = crop
                     .regions
                     .iter()
@@ -53,21 +60,6 @@ pub fn detection_worker(
                     .collect();
 
                 if matched_regions.is_empty() {
-                    tracing::warn!("No matching regions found for overview crop with targets {:?}. Skipping detection to avoid crash.", targets);
-                    results.push(CropResult {
-                        suffix: crop.suffix,
-                        detections: Vec::new(),
-                        original_polygon: crop.original_polygon,
-                        effective_polygon: crop.effective_polygon,
-                        bbox: BBox {
-                            x: 0.0,
-                            y: 0.0,
-                            w: 1.0,
-                            h: 1.0,
-                        },
-                        image: None,
-                        regions: crop.regions,
-                    });
                     continue;
                 }
 
@@ -78,54 +70,197 @@ pub fn detection_worker(
                         .collect::<Vec<_>>(),
                 )
             } else {
+                // EZ crops (left/right): no region filtering — the entire crop IS the region
                 None
             };
 
-            let detections = if slicing_enabled {
-                detect_with_slicing(
-                    &mut detector,
-                    &crop.image,
-                    &slice_config,
-                    min_conf,
-                    regions_to_detect_internal.as_deref(),
-                )?
+            if slicing_enabled {
+                let tiles = generate_tiles(&crop.image, &slice_config, regions_to_tile.as_deref())?;
+                for tile in tiles {
+                    all_queued_tiles.push(QueuedTile { crop_index, tile });
+                }
             } else {
-                detector.detect(&crop.image)?
-            };
-
-            let enriched: Vec<EnrichedDetection> = detections
-                .into_iter()
-                .filter(|d| d.confidence().unwrap_or(0.0) >= min_conf)
-                .filter(|d| d.name().unwrap_or("") == "person")
-                .map(|d| EnrichedDetection {
-                    bbox: BBox {
-                        x: d.xmin(),
-                        y: d.ymin(),
-                        w: d.width(),
-                        h: d.height(),
+                // Standard detection: one "fake" tile covering the whole image
+                all_queued_tiles.push(QueuedTile {
+                    crop_index,
+                    tile: crate::pipeline::slicing::Tile {
+                        image: crop.image.clone(),
+                        x_offset: 0,
+                        y_offset: 0,
+                        original_width: crop.image.cols(),
+                        original_height: crop.image.rows(),
                     },
-                    confidence: d.confidence().unwrap_or(0.0),
-                    class_id: d.id().unwrap_or(0),
-                    class_name: d.name().map(|s| s.to_string()),
-                    in_end_zone: false,
-                    in_field: false,
-                })
+                });
+            }
+        }
+
+        // 2. Inference Phase: Batch detect all collected tiles
+        let mut detections_by_crop = vec![Vec::new(); frame.crops.len()];
+        if !all_queued_tiles.is_empty() {
+            let tile_images: Vec<opencv::core::Mat> = all_queued_tiles
+                .iter()
+                .map(|t| t.tile.image.clone())
                 .collect();
+            let chunk_size = safe_chunk_size(all_queued_tiles.len());
+            let batch_results = detector.detect_batch(&tile_images, chunk_size)?;
+
+            for (queued, detections) in all_queued_tiles.into_iter().zip(batch_results) {
+                for det in detections {
+                    if det.confidence().unwrap_or(0.0) < min_conf {
+                        continue;
+                    }
+                    if det.name().unwrap_or("") != "person" {
+                        continue;
+                    }
+
+                    // Transform detection back to crop pixel coordinates
+                    let transformed = transform_detection_to_image_coords(&det, &queued.tile);
+                    detections_by_crop[queued.crop_index].push(transformed);
+                }
+            }
+        }
+
+        // 3. Re-assembly Phase: Create CropResults and merge EZ detections into overview
+        let mut results = Vec::with_capacity(frame.crops.len());
+        let overview_info: Option<(usize, BBox, f32, f32)> =
+            frame.crops.iter().enumerate().find_map(|(i, c)| {
+                if c.suffix == "overview" {
+                    let size = c.image.size().ok()?;
+                    Some((i, c.source_bbox, size.width as f32, size.height as f32))
+                } else {
+                    None
+                }
+            });
+
+        // Initialize CropResults
+        for (i, crop) in frame.crops.iter().enumerate() {
+            let nms_results = nms(
+                detections_by_crop[i].clone(),
+                slice_config.nms_iou_threshold,
+            );
+            let size = crop.image.size()?;
 
             results.push(CropResult {
-                suffix: crop.suffix,
-                detections: enriched,
-                original_polygon: crop.original_polygon,
-                effective_polygon: crop.effective_polygon,
+                suffix: crop.suffix.clone(),
+                detections: nms_results
+                    .into_iter()
+                    .map(|d| EnrichedDetection {
+                        bbox: BBox {
+                            x: d.xmin(),
+                            y: d.ymin(),
+                            w: d.width(),
+                            h: d.height(),
+                        },
+                        confidence: d.confidence().unwrap_or(0.0),
+                        class_id: d.id().unwrap_or(0),
+                        class_name: d.name().map(|s| s.to_string()),
+                        in_end_zone: crop.suffix == "left" || crop.suffix == "right",
+                        in_field: crop.suffix == "overview", // Initial guess, will be refined in feature.rs
+                    })
+                    .collect(),
+                original_polygon: crop.original_polygon.clone(),
+                effective_polygon: crop.effective_polygon.clone(),
                 bbox: BBox {
                     x: 0.0,
                     y: 0.0,
-                    w: crop.image.cols() as f32,
-                    h: crop.image.rows() as f32,
+                    w: size.width as f32,
+                    h: size.height as f32,
                 },
-                image: Some(crop.image),
-                regions: crop.regions,
+                image: Some(crop.image.clone()),
+                regions: crop.regions.clone(),
             });
+        }
+
+        // 4. Merging Phase: Merge EZ detections into the overview CropResult
+        if let Some((ov_index, ov_bbox, ov_w, ov_h)) = overview_info {
+            let mut merged_ez_detections = Vec::new();
+
+            for (i, crop) in frame.crops.iter().enumerate() {
+                if i == ov_index {
+                    continue;
+                }
+                if crop.suffix != "left" && crop.suffix != "right" {
+                    continue;
+                }
+
+                // Transform these detections to overview space
+                let crop_size = crop.image.size()?;
+                let ez_w = crop_size.width as f32;
+                let ez_h = crop_size.height as f32;
+
+                for det in &results[i].detections {
+                    let ov_bbox_px = transform_ez_to_overview(
+                        &det.bbox,
+                        &crop.source_bbox,
+                        ez_w,
+                        ez_h,
+                        &ov_bbox,
+                        ov_w,
+                        ov_h,
+                    );
+
+                    let mut enriched = det.clone();
+                    enriched.bbox = ov_bbox_px;
+                    merged_ez_detections.push(enriched);
+                }
+            }
+
+            // Append merged EZ detections to the overview CropResult
+            if let Some(ov_result) = results.get_mut(ov_index) {
+                ov_result.detections.extend(merged_ez_detections);
+
+                // FINAL NMS to remove duplicates between overview-field and EZ-highres detections
+                let mut sorted_indices: Vec<usize> = (0..ov_result.detections.len()).collect();
+                sorted_indices.sort_by(|&a, &b| {
+                    ov_result.detections[b]
+                        .confidence
+                        .partial_cmp(&ov_result.detections[a].confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                let mut keep = Vec::new();
+                let mut suppressed = vec![false; ov_result.detections.len()];
+                let iou_threshold = slice_config.nms_iou_threshold;
+
+                for i in 0..sorted_indices.len() {
+                    let idx_i = sorted_indices[i];
+                    if suppressed[idx_i] {
+                        continue;
+                    }
+                    keep.push(idx_i);
+
+                    for j in (i + 1)..sorted_indices.len() {
+                        let idx_j = sorted_indices[j];
+                        if suppressed[idx_j] {
+                            continue;
+                        }
+
+                        let b1 = &ov_result.detections[idx_i].bbox;
+                        let b2 = &ov_result.detections[idx_j].bbox;
+
+                        // Calculate IoU
+                        let x1 = b1.x.max(b2.x);
+                        let y1 = b1.y.max(b2.y);
+                        let x2 = (b1.x + b1.w).min(b2.x + b2.w);
+                        let y2 = (b1.y + b1.h).min(b2.y + b2.h);
+                        let w = (x2 - x1).max(0.0);
+                        let h = (y2 - y1).max(0.0);
+                        let intersection = w * h;
+                        let union = b1.w * b1.h + b2.w * b2.h - intersection;
+                        let iou = intersection / union;
+
+                        if iou > iou_threshold {
+                            suppressed[idx_j] = true;
+                        }
+                    }
+                }
+
+                let mut filtered = Vec::with_capacity(keep.len());
+                for idx in keep {
+                    filtered.push(ov_result.detections[idx].clone());
+                }
+                ov_result.detections = filtered;
+            }
         }
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
@@ -196,37 +331,104 @@ fn safe_chunk_size(n_tiles: usize) -> usize {
     }
 }
 
-/// Runs inference using a sliding window (slicing) strategy to detect small objects.
-fn detect_with_slicing(
-    detector: &mut ObjectDetector,
-    image: &opencv::core::Mat,
-    config: &SliceConfig,
-    min_conf: f32,
-    regions: Option<&[Vec<Point>]>,
-) -> Result<Vec<usls::Hbb>> {
-    let tiles = generate_tiles(image, config, regions)?;
+/// Transform a bounding box from end-zone crop pixel coordinates to overview crop pixel coordinates.
+///
+/// The transform goes: EZ pixel → global normalized → overview pixel.
+///
+/// - `det`: bounding box in EZ crop pixel coordinates
+/// - `ez_bbox`: the EZ crop's bounding box in normalized global coordinates
+/// - `ez_w`, `ez_h`: EZ crop image dimensions in pixels
+/// - `ov_bbox`: the overview crop's bounding box in normalized global coordinates
+/// - `ov_w`, `ov_h`: overview crop image dimensions in pixels
+fn transform_ez_to_overview(
+    det: &BBox,
+    ez_bbox: &BBox,
+    ez_w: f32,
+    ez_h: f32,
+    ov_bbox: &BBox,
+    ov_w: f32,
+    ov_h: f32,
+) -> BBox {
+    // EZ pixel → global normalized
+    let global_x = ez_bbox.x + (det.x / ez_w) * ez_bbox.w;
+    let global_y = ez_bbox.y + (det.y / ez_h) * ez_bbox.h;
+    let global_w = (det.w / ez_w) * ez_bbox.w;
+    let global_h = (det.h / ez_h) * ez_bbox.h;
 
-    if tiles.is_empty() {
-        return detector.detect(image);
+    // Global normalized → overview pixel
+    let ov_x = ((global_x - ov_bbox.x) / ov_bbox.w) * ov_w;
+    let ov_y = ((global_y - ov_bbox.y) / ov_bbox.h) * ov_h;
+    let ov_det_w = (global_w / ov_bbox.w) * ov_w;
+    let ov_det_h = (global_h / ov_bbox.h) * ov_h;
+
+    BBox {
+        x: ov_x,
+        y: ov_y,
+        w: ov_det_w,
+        h: ov_det_h,
     }
-    tracing::debug!("Detecting with slicing: {} tiles", tiles.len());
+}
 
-    let chunk_size = safe_chunk_size(tiles.len());
-    tracing::debug!("Using chunk_size={} for {} tiles", chunk_size, tiles.len());
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let tile_images: Vec<opencv::core::Mat> = tiles.iter().map(|t| t.image.clone()).collect();
-    let batch_results = detector.detect_batch(&tile_images, chunk_size)?;
-
-    let mut all_detections = Vec::new();
-    for (tile, detections) in tiles.iter().zip(batch_results) {
-        for det in detections {
-            if det.confidence().unwrap_or(0.0) < min_conf {
-                continue;
-            }
-            let transformed = transform_detection_to_image_coords(&det, tile);
-            all_detections.push(transformed);
-        }
+    #[test]
+    fn test_transform_ez_to_overview_identity() {
+        // When EZ crop bbox == overview crop bbox, transform is identity
+        let det = BBox {
+            x: 100.0,
+            y: 50.0,
+            w: 40.0,
+            h: 60.0,
+        };
+        let bbox = BBox {
+            x: 0.1,
+            y: 0.1,
+            w: 0.8,
+            h: 0.8,
+        };
+        let result = transform_ez_to_overview(&det, &bbox, 640.0, 480.0, &bbox, 640.0, 480.0);
+        assert!((result.x - det.x).abs() < 0.01);
+        assert!((result.y - det.y).abs() < 0.01);
+        assert!((result.w - det.w).abs() < 0.01);
+        assert!((result.h - det.h).abs() < 0.01);
     }
 
-    Ok(nms(all_detections, config.nms_iou_threshold))
+    #[test]
+    fn test_transform_ez_to_overview_left_crop() {
+        // Left EZ crop covers the left third of the overview
+        // Overview: x=0.0, y=0.0, w=1.0, h=0.5 → 1920x960 pixels
+        // Left EZ: x=0.0, y=0.0, w=0.33, h=0.5 → 640x960 pixels
+        let ov_bbox = BBox {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 0.5,
+        };
+        let ez_bbox = BBox {
+            x: 0.0,
+            y: 0.0,
+            w: 0.33,
+            h: 0.5,
+        };
+
+        // Detection at center of EZ crop: (320, 480) in EZ pixels
+        let det = BBox {
+            x: 300.0,
+            y: 460.0,
+            w: 40.0,
+            h: 40.0,
+        };
+
+        let result =
+            transform_ez_to_overview(&det, &ez_bbox, 640.0, 960.0, &ov_bbox, 1920.0, 960.0);
+
+        // (300/640)*0.33 = 0.1546875 global x → (0.1546875/1.0)*1920 = 297.0 overview px
+        assert!((result.x - 297.0).abs() < 1.0, "x: {}", result.x);
+        // y: (460/960)*0.5 = 0.2395833 global → (0.2395833/0.5)*960 = 460 overview px
+        assert!((result.y - 460.0).abs() < 1.0, "y: {}", result.y);
+        // w: (40/640)*0.33 = 0.020625 global → (0.020625/1.0)*1920 = 39.6 overview px
+        assert!((result.w - 39.6).abs() < 1.0, "w: {}", result.w);
+    }
 }

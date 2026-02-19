@@ -564,98 +564,152 @@ fn calculate_frame_metrics(frame: &mut DetectedFrame, config: &FeatureConfig) {
     let mut crop_w = 1.0;
     let mut crop_h = 1.0;
 
-    for res in &mut frame.results {
+    // First pass: find overview crop dimensions for CoM normalization
+    for res in &frame.results {
         if res.suffix == "overview" {
             crop_w = res.bbox.w;
             crop_h = res.bbox.h;
+            break;
+        }
+    }
 
-            let mut left_c = 0;
-            let mut right_c = 0;
-            let mut field_c = 0;
+    let overview_exists = frame.results.iter().any(|r| r.suffix == "overview");
 
-            for d in &mut res.detections {
-                let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
-                let bottom_center_y = d.bbox.y + d.bbox.h;
+    for res in &mut frame.results {
+        match res.suffix.as_str() {
+            "overview" => {
+                // Overview crop: contains field detections and merged EZ detections
+                let mut left_c = 0;
+                let mut right_c = 0;
+                let mut field_c = 0;
 
-                for region in &res.regions {
-                    if is_point_in_polygon_robust(
+                for d in &mut res.detections {
+                    let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
+                    let bottom_center_y = d.bbox.y + d.bbox.h;
+
+                    // Reset flags to ensure polygon-based truth on the overview
+                    d.in_field = false;
+                    d.in_end_zone = false;
+
+                    // Prioritize "left" and "right" regions over "field"
+                    let mut matched = false;
+
+                    // First pass: check EZ regions
+                    for region in &res.regions {
+                        if region.name == "left" || region.name == "right" {
+                            if is_point_in_polygon_robust(
+                                bottom_center_x,
+                                bottom_center_y,
+                                &region.effective_polygon,
+                            ) {
+                                d.in_end_zone = true;
+                                if region.name == "left" {
+                                    left_c += 1;
+                                } else {
+                                    right_c += 1;
+                                }
+                                matched = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Second pass: check field region if not already matched
+                    if !matched {
+                        for region in &res.regions {
+                            if region.name == "field" {
+                                if is_point_in_polygon_robust(
+                                    bottom_center_x,
+                                    bottom_center_y,
+                                    &region.effective_polygon,
+                                ) {
+                                    field_c += 1;
+                                    d.in_field = true;
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if d.in_end_zone || d.in_field {
+                        points_x.push(bottom_center_x);
+                        points_y.push(bottom_center_y);
+                    }
+                }
+
+                left_count_raw = left_c as f32 / config.team_size as f32;
+                right_count_raw = right_c as f32 / config.team_size as f32;
+                field_count_raw = field_c as f32 / config.team_size as f32;
+            }
+            "left" | "right" => {
+                // Individual EZ crops are kept for visualization in the dashboard,
+                // but we skip them here IF overview exists to avoid double-adding to CoM and counts.
+                if overview_exists {
+                    continue;
+                }
+
+                let mut count = 0;
+                for d in &mut res.detections {
+                    let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
+                    let bottom_center_y = d.bbox.y + d.bbox.h;
+
+                    if d.in_end_zone {
+                        count += 1;
+                        points_x.push(bottom_center_x);
+                        points_y.push(bottom_center_y);
+                    }
+                }
+
+                let norm = count as f32 / config.team_size as f32;
+                match res.suffix.as_str() {
+                    "left" => left_count_raw = norm,
+                    "right" => right_count_raw = norm,
+                    _ => {}
+                }
+            }
+            _ => {
+                // Legacy/other crops: handle generically
+                if res.bbox.w > 0.0 {
+                    crop_w = res.bbox.w;
+                    crop_h = res.bbox.h;
+                }
+
+                let mut count = 0;
+                for d in &mut res.detections {
+                    let bottom_center_x = d.bbox.x + d.bbox.w / 2.0;
+                    let bottom_center_y = d.bbox.y + d.bbox.h;
+
+                    let in_roi = is_point_in_polygon_robust(
                         bottom_center_x,
                         bottom_center_y,
-                        &region.effective_polygon,
-                    ) {
-                        match region.name.as_str() {
-                            "left" => {
-                                left_c += 1;
+                        &res.effective_polygon,
+                    );
+
+                    if in_roi {
+                        match res.suffix.as_str() {
+                            "left" | "right" => {
                                 d.in_end_zone = true;
-                            }
-                            "right" => {
-                                right_c += 1;
-                                d.in_end_zone = true;
+                                count += 1;
                             }
                             "field" => {
-                                field_c += 1;
                                 d.in_field = true;
+                                count += 1;
                             }
                             _ => {}
                         }
-                        break;
+                        points_x.push(bottom_center_x);
+                        points_y.push(bottom_center_y);
                     }
                 }
 
-                if d.in_end_zone || d.in_field {
-                    points_x.push(bottom_center_x);
-                    points_y.push(bottom_center_y);
+                let norm = count as f32 / config.team_size as f32;
+                match res.suffix.as_str() {
+                    "left" => left_count_raw = norm,
+                    "right" => right_count_raw = norm,
+                    "field" => field_count_raw = norm,
+                    _ => {}
                 }
-            }
-
-            left_count_raw = left_c as f32 / config.team_size as f32;
-            right_count_raw = right_c as f32 / config.team_size as f32;
-            field_count_raw = field_c as f32 / config.team_size as f32;
-        } else {
-            // Legacy/Individual crop
-            if res.bbox.w > 0.0 {
-                crop_w = res.bbox.w;
-                crop_h = res.bbox.h;
-            }
-
-            let mut count = 0;
-            for d in &mut res.detections {
-                let x = d.bbox.x;
-                let y = d.bbox.y;
-                let w = d.bbox.w;
-                let h = d.bbox.h;
-                let bottom_center_x = x + w / 2.0;
-                let bottom_center_y = y + h;
-
-                let in_roi = is_point_in_polygon_robust(
-                    bottom_center_x,
-                    bottom_center_y,
-                    &res.effective_polygon,
-                );
-
-                if in_roi {
-                    match res.suffix.as_str() {
-                        "left" | "right" => {
-                            d.in_end_zone = true;
-                            count += 1;
-                        }
-                        "field" => {
-                            d.in_field = true;
-                            count += 1;
-                        }
-                        _ => {}
-                    }
-                    points_x.push(bottom_center_x);
-                    points_y.push(bottom_center_y);
-                }
-            }
-
-            let norm = count as f32 / config.team_size as f32;
-            match res.suffix.as_str() {
-                "left" => left_count_raw = norm,
-                "right" => right_count_raw = norm,
-                "field" => field_count_raw = norm,
-                _ => {}
             }
         }
     }

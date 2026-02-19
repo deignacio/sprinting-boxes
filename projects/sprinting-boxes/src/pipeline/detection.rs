@@ -26,12 +26,6 @@ impl ObjectDetector {
         Ok(Self { model })
     }
 
-    /// Run detection on an OpenCV Mat.
-    pub fn detect(&mut self, image: &Mat) -> Result<Vec<usls::Hbb>> {
-        let results = self.detect_batch(std::slice::from_ref(image), 1)?;
-        Ok(results.into_iter().next().unwrap_or_default())
-    }
-
     /// Run detection on a batch of OpenCV Mats.
     /// `chunk_size` controls how many images are sent to the model at once.
     pub fn detect_batch(

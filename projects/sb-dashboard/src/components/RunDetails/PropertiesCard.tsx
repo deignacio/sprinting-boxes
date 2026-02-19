@@ -6,6 +6,8 @@ import {
   Tag,
   Calendar,
   Video as VideoIcon,
+  Clock,
+  ExternalLink,
 } from "lucide-react";
 import type { RunDetail } from "../../types/run";
 
@@ -18,6 +20,22 @@ interface PropertiesCardProps {
   setEditTags: (val: string) => void;
   editSampleRate: number;
   setEditSampleRate: (val: number) => void;
+  editYoutubeLink: string;
+  setEditYoutubeLink: (val: string) => void;
+  editFuegostatsLink: string;
+  setEditFuegostatsLink: (val: string) => void;
+}
+
+function formatDuration(totalFrames: number, fps: number): string {
+  if (!fps || fps <= 0) return "Unknown";
+  const totalSecs = Math.round(totalFrames / fps);
+  const hours = Math.floor(totalSecs / 3600);
+  const minutes = Math.floor((totalSecs % 3600) / 60);
+  const seconds = totalSecs % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  return `${minutes}m ${seconds}s`;
 }
 
 const PropertiesCard: React.FC<PropertiesCardProps> = ({
@@ -29,6 +47,10 @@ const PropertiesCard: React.FC<PropertiesCardProps> = ({
   setEditTags,
   editSampleRate,
   setEditSampleRate,
+  editYoutubeLink,
+  setEditYoutubeLink,
+  editFuegostatsLink,
+  setEditFuegostatsLink,
 }) => {
   return (
     <div className="glass-card">
@@ -194,6 +216,96 @@ const PropertiesCard: React.FC<PropertiesCardProps> = ({
           <div style={{ fontWeight: 500, fontSize: "0.875rem" }}>
             {new Date(run.run_context.created_at).toLocaleString()}
           </div>
+        </div>
+
+        <div className="list-item">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              color: "var(--text-muted)",
+              fontSize: "0.875rem",
+            }}
+          >
+            <Clock size={14} />
+            Video Duration
+          </div>
+          <div style={{ fontWeight: 500, fontSize: "0.875rem" }}>
+            {formatDuration(run.run_context.total_frames, run.run_context.fps)}
+          </div>
+        </div>
+
+        <div className="list-item">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              color: "var(--text-muted)",
+              fontSize: "0.875rem",
+            }}
+          >
+            <ExternalLink size={14} />
+            YouTube Link
+          </div>
+          {isEditing ? (
+            <input
+              type="text"
+              className="form-input"
+              style={{ width: "100%", padding: "0.25rem 0.5rem" }}
+              value={editYoutubeLink}
+              onChange={(e) => setEditYoutubeLink(e.target.value)}
+              placeholder="https://youtube.com/..."
+            />
+          ) : run.run_context.youtube_link ? (
+            <a
+              href={run.run_context.youtube_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "#60a5fa", fontSize: "0.875rem", textDecoration: "underline" }}
+            >
+              {run.run_context.youtube_link}
+            </a>
+          ) : (
+            <span style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Not set</span>
+          )}
+        </div>
+
+        <div className="list-item">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              color: "var(--text-muted)",
+              fontSize: "0.875rem",
+            }}
+          >
+            <ExternalLink size={14} />
+            Fuegostats Link
+          </div>
+          {isEditing ? (
+            <input
+              type="text"
+              className="form-input"
+              style={{ width: "100%", padding: "0.25rem 0.5rem" }}
+              value={editFuegostatsLink}
+              onChange={(e) => setEditFuegostatsLink(e.target.value)}
+              placeholder="https://fuegostats.com/..."
+            />
+          ) : run.run_context.fuegostats_link ? (
+            <a
+              href={run.run_context.fuegostats_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "#60a5fa", fontSize: "0.875rem", textDecoration: "underline" }}
+            >
+              {run.run_context.fuegostats_link}
+            </a>
+          ) : (
+            <span style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Not set</span>
+          )}
         </div>
       </div>
     </div>

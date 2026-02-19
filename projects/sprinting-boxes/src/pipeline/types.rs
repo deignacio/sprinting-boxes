@@ -195,7 +195,7 @@ impl From<&CropsConfig> for Vec<CropConfig> {
             h: b.h,
         };
 
-        vec![CropConfig {
+        let mut configs = vec![CropConfig {
             bbox: convert_bbox(&crops.overview.bbox),
             original_polygon: crops
                 .overview
@@ -210,6 +210,7 @@ impl From<&CropsConfig> for Vec<CropConfig> {
                 .map(convert_point)
                 .collect(),
             suffix: "overview".to_string(),
+            // Ensure all regions are present for visualization in the dashboard
             regions: vec![
                 RegionalPolygon {
                     name: "left".to_string(),
@@ -243,7 +244,67 @@ impl From<&CropsConfig> for Vec<CropConfig> {
                     effective_polygon: crops.field_polygon.iter().map(convert_point).collect(),
                 },
             ],
-        }]
+        }];
+
+        // Add left end-zone crop if configured
+        if let Some(ref left_ez) = crops.left_end_zone {
+            configs.push(CropConfig {
+                bbox: convert_bbox(&left_ez.bbox),
+                original_polygon: left_ez.original_polygon.iter().map(convert_point).collect(),
+                effective_polygon: left_ez
+                    .effective_polygon
+                    .iter()
+                    .map(convert_point)
+                    .collect(),
+                suffix: "left".to_string(),
+                regions: vec![RegionalPolygon {
+                    name: "left".to_string(),
+                    polygon: crops
+                        .left_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
+                    effective_polygon: crops
+                        .left_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
+                }],
+            });
+        }
+
+        // Add right end-zone crop if configured
+        if let Some(ref right_ez) = crops.right_end_zone {
+            configs.push(CropConfig {
+                bbox: convert_bbox(&right_ez.bbox),
+                original_polygon: right_ez
+                    .original_polygon
+                    .iter()
+                    .map(convert_point)
+                    .collect(),
+                effective_polygon: right_ez
+                    .effective_polygon
+                    .iter()
+                    .map(convert_point)
+                    .collect(),
+                suffix: "right".to_string(),
+                regions: vec![RegionalPolygon {
+                    name: "right".to_string(),
+                    polygon: crops
+                        .right_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
+                    effective_polygon: crops
+                        .right_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
+                }],
+            });
+        }
+
+        configs
     }
 }
 
@@ -280,7 +341,9 @@ pub struct CropData {
     pub original_polygon: Vec<Point>,  // Local crop coords
     pub effective_polygon: Vec<Point>, // Local crop coords
     pub suffix: String,
-    pub regions: Vec<RegionalPolygon>, // NEW: sub-regions transformed to local coords
+    pub regions: Vec<RegionalPolygon>, // Sub-regions transformed to local coords
+    /// The normalized bounding box of this crop in the source frame (for coordinate transforms)
+    pub source_bbox: BBox,
 }
 
 /// A preprocessed frame containing all crop regions

@@ -784,13 +784,15 @@ pub async fn get_youtube_chapters_handler(
     // Always start with 00:00
     chapters.push_str("00:00 Video Start\n");
 
-    for (i, cliff) in enriched_cliffs.iter().enumerate() {
+    let mut confirmed_index = 0;
+    for cliff in enriched_cliffs.iter() {
         if cliff.status != "Confirmed" {
             continue;
         }
+        confirmed_index += 1;
 
         let timestamp = format_timestamp(cliff.frame_index, sample_rate, offset);
-        let description = get_point_description(cliff, i + 1, &audit_state.settings);
+        let description = get_point_description(cliff, confirmed_index, &audit_state.settings);
         chapters.push_str(&format!("{} {}\n", timestamp, description));
     }
 

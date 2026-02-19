@@ -39,6 +39,10 @@ const RunDetailsPage: React.FC = () => {
     setEditTags,
     editSampleRate,
     setEditSampleRate,
+    editYoutubeLink,
+    setEditYoutubeLink,
+    editFuegostatsLink,
+    setEditFuegostatsLink,
     isSaving,
     fetchRun,
     handleSave,
@@ -120,6 +124,7 @@ const RunDetailsPage: React.FC = () => {
         onUpdateSettings={handleUpdateSettings}
         onBack={() => setView("audit")}
         onNavigate={(cliff) => setSelectedCliff(cliff)}
+        onStateChange={loadAuditData}
       />
     );
   } else if (view === "cliff_detail" && !auditSettings) {
@@ -248,6 +253,10 @@ const RunDetailsPage: React.FC = () => {
                   setEditTags={setEditTags}
                   editSampleRate={editSampleRate}
                   setEditSampleRate={setEditSampleRate}
+                  editYoutubeLink={editYoutubeLink}
+                  setEditYoutubeLink={setEditYoutubeLink}
+                  editFuegostatsLink={editFuegostatsLink}
+                  setEditFuegostatsLink={setEditFuegostatsLink}
                 />
               </div>
 

@@ -14,6 +14,10 @@ export interface RunContext {
   dark_team_name: string;
   tags: string[];
   sample_rate: number;
+  total_frames: number;
+  fps: number;
+  youtube_link?: string;
+  fuegostats_link?: string;
 }
 
 export interface RunDetail {

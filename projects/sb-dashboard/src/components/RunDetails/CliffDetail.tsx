@@ -9,6 +9,7 @@ interface CliffDetailProps {
   onUpdateSettings: (settings: AuditSettings) => Promise<void>;
   onBack: () => void;
   onNavigate: (cliff: CliffData) => void;
+  onStateChange: () => void;
 }
 
 interface FrameData {
@@ -28,6 +29,7 @@ export default function CliffDetail({
   onUpdateSettings,
   onBack,
   onNavigate,
+  onStateChange,
 }: CliffDetailProps) {
   const [localStatus, setLocalStatus] = useState(cliff.status);
   const [localSideOverride, setLocalSideOverride] = useState<string | null>(
@@ -120,6 +122,7 @@ export default function CliffDetail({
         { method: "POST" },
       );
       setLocalStatus("Confirmed");
+      onStateChange();
     } catch (err) {
       console.error("Failed to confirm", err);
     }
@@ -132,6 +135,7 @@ export default function CliffDetail({
         { method: "POST" },
       );
       setLocalStatus("FalsePositive");
+      onStateChange();
     } catch (err) {
       console.error("Failed to reject", err);
     }
@@ -145,6 +149,7 @@ export default function CliffDetail({
       // Toggle local override
       const current = currentPullSide;
       setLocalSideOverride(current === "left" ? "right" : "left");
+      onStateChange();
     } catch (err) {
       console.error("Failed to switch side", err);
     }
@@ -164,6 +169,7 @@ export default function CliffDetail({
 
       setLocalLeftColor(newLeft);
       setLocalRightColor(newRight);
+      onStateChange();
     } catch (err) {
       console.error("Failed to switch colors", err);
     }

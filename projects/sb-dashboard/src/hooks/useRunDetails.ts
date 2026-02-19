@@ -11,6 +11,8 @@ export const useRunDetails = (id: string | undefined) => {
   const [editTeamSize, setEditTeamSize] = useState(7);
   const [editTags, setEditTags] = useState("");
   const [editSampleRate, setEditSampleRate] = useState(1.0);
+  const [editYoutubeLink, setEditYoutubeLink] = useState("");
+  const [editFuegostatsLink, setEditFuegostatsLink] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
   const fetchRun = useCallback(() => {
@@ -27,6 +29,8 @@ export const useRunDetails = (id: string | undefined) => {
         setEditTeamSize(data.run_context.team_size);
         setEditTags(data.run_context.tags.join(", "));
         setEditSampleRate(data.run_context.sample_rate || 1.0);
+        setEditYoutubeLink(data.run_context.youtube_link || "");
+        setEditFuegostatsLink(data.run_context.fuegostats_link || "");
         setLoading(false);
       })
       .catch((err) => {
@@ -52,6 +56,8 @@ export const useRunDetails = (id: string | undefined) => {
         .map((t) => t.trim())
         .filter((t) => t.length > 0),
       sample_rate: editSampleRate,
+      youtube_link: editYoutubeLink || null,
+      fuegostats_link: editFuegostatsLink || null,
     };
 
     try {
@@ -87,6 +93,10 @@ export const useRunDetails = (id: string | undefined) => {
     setEditTags,
     editSampleRate,
     setEditSampleRate,
+    editYoutubeLink,
+    setEditYoutubeLink,
+    editFuegostatsLink,
+    setEditFuegostatsLink,
     isSaving,
     fetchRun,
     handleSave,

@@ -53,6 +53,12 @@ pub struct CropConfigData {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CropsConfig {
     pub overview: CropConfigData,
+    /// Tight crop around the left end zone for high-resolution detection
+    #[serde(default)]
+    pub left_end_zone: Option<CropConfigData>,
+    /// Tight crop around the right end zone for high-resolution detection
+    #[serde(default)]
+    pub right_end_zone: Option<CropConfigData>,
     pub left_end_zone_polygon: Vec<Point>,
     pub right_end_zone_polygon: Vec<Point>,
     pub field_polygon: Vec<Point>,

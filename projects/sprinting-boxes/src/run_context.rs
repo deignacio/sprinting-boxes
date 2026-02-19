@@ -22,6 +22,10 @@ pub struct RunContext {
     pub total_frames: usize,
     #[serde(default)]
     pub fps: f64,
+    #[serde(default)]
+    pub youtube_link: Option<String>,
+    #[serde(default)]
+    pub fuegostats_link: Option<String>,
     #[serde(skip)]
     pub output_dir: PathBuf,
 }
@@ -45,6 +49,8 @@ impl RunContext {
             sample_rate: 1.0,
             total_frames: 0,
             fps: 30.0,
+            youtube_link: None,
+            fuegostats_link: None,
             output_dir,
         }
     }
@@ -207,6 +213,18 @@ impl RunContext {
             crate::pipeline::geometry::compute_bbox_with_crop_padding(&all_points, CROP_PADDING)
                 .ok_or_else(|| anyhow::anyhow!("Failed to compute overview bbox"))?;
 
+        // Compute per-endzone crop bboxes for high-resolution detection
+        let left_ez_bbox = crate::pipeline::geometry::compute_bbox_with_crop_padding(
+            &left_effective,
+            CROP_PADDING,
+        )
+        .ok_or_else(|| anyhow::anyhow!("Failed to compute left EZ bbox"))?;
+        let right_ez_bbox = crate::pipeline::geometry::compute_bbox_with_crop_padding(
+            &right_effective,
+            CROP_PADDING,
+        )
+        .ok_or_else(|| anyhow::anyhow!("Failed to compute right EZ bbox"))?;
+
         let crops = CropsConfig {
             overview: CropConfigData {
                 name: "overview".to_string(),
@@ -214,6 +232,18 @@ impl RunContext {
                 original_polygon: all_points.clone(), // Union of all original points
                 effective_polygon: all_points,        // Same for overview
             },
+            left_end_zone: Some(CropConfigData {
+                name: "left".to_string(),
+                bbox: left_ez_bbox,
+                original_polygon: left_global.clone(),
+                effective_polygon: left_effective.clone(),
+            }),
+            right_end_zone: Some(CropConfigData {
+                name: "right".to_string(),
+                bbox: right_ez_bbox,
+                original_polygon: right_global.clone(),
+                effective_polygon: right_effective.clone(),
+            }),
             left_end_zone_polygon: left_effective,
             right_end_zone_polygon: right_effective,
             field_polygon: field_global,
