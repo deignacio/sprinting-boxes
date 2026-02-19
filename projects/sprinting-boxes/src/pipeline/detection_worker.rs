@@ -181,6 +181,21 @@ pub fn detection_worker(
     Ok(())
 }
 
+/// Compute a safe chunk size for CoreML batch inference.
+/// CoreML's BNNSFilterApplyTwoInputBatch has a dtype bug that triggers
+/// when processing full batches of 8. Using at most 7 per chunk ensures
+/// the batch is always "partial" and avoids the buggy code path.
+fn safe_chunk_size(n_tiles: usize) -> usize {
+    if n_tiles <= 7 {
+        // Few enough tiles that we can process them all at once
+        // without ever filling a batch of 8
+        n_tiles
+    } else {
+        // More than 7 tiles: use chunks of 7 to stay safe
+        7
+    }
+}
+
 /// Runs inference using a sliding window (slicing) strategy to detect small objects.
 fn detect_with_slicing(
     detector: &mut ObjectDetector,
@@ -196,8 +211,11 @@ fn detect_with_slicing(
     }
     tracing::debug!("Detecting with slicing: {} tiles", tiles.len());
 
+    let chunk_size = safe_chunk_size(tiles.len());
+    tracing::debug!("Using chunk_size={} for {} tiles", chunk_size, tiles.len());
+
     let tile_images: Vec<opencv::core::Mat> = tiles.iter().map(|t| t.image.clone()).collect();
-    let batch_results = detector.detect_batch(&tile_images)?;
+    let batch_results = detector.detect_batch(&tile_images, chunk_size)?;
 
     let mut all_detections = Vec::new();
     for (tile, detections) in tiles.iter().zip(batch_results) {

@@ -11,14 +11,25 @@ fn to_geo_polygon(points: &[Point]) -> Polygon<f64> {
     Polygon::new(ls, vec![])
 }
 
-/// Convert geo_types MultiPolygon back to our Points
+/// Convert geo_types MultiPolygon back to our Points.
+/// Computes the convex hull of all vertices to produce a single simple
+/// polygon covering the entire effective area.
 fn from_geo_multipolygon(mp: &MultiPolygon<f64>) -> Vec<Point> {
-    mp.0.iter()
-        .flat_map(|poly| {
-            poly.exterior().coords().map(|c| Point {
-                x: c.x as f32,
-                y: c.y as f32,
-            })
+    use geo::ConvexHull;
+    let all_coords: Vec<geo_types::Coord<f64>> =
+        mp.0.iter()
+            .flat_map(|poly| poly.exterior().coords().cloned())
+            .collect();
+    if all_coords.is_empty() {
+        return Vec::new();
+    }
+    let ls = geo_types::LineString::new(all_coords);
+    let hull = geo_types::Polygon::new(ls, vec![]).convex_hull();
+    hull.exterior()
+        .coords()
+        .map(|c| Point {
+            x: c.x as f32,
+            y: c.y as f32,
         })
         .collect()
 }

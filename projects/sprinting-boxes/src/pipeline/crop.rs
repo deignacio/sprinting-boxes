@@ -144,6 +144,12 @@ pub fn crop_worker(
                     .map(|r| RegionalPolygon {
                         name: r.name.clone(),
                         polygon: transform_polygon(&r.polygon, &config.bbox, crop_w, crop_h),
+                        effective_polygon: transform_polygon(
+                            &r.effective_polygon,
+                            &config.bbox,
+                            crop_w,
+                            crop_h,
+                        ),
                     })
                     .collect();
 

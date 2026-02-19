@@ -28,19 +28,30 @@ impl ObjectDetector {
 
     /// Run detection on an OpenCV Mat.
     pub fn detect(&mut self, image: &Mat) -> Result<Vec<usls::Hbb>> {
-        let results = self.detect_batch(std::slice::from_ref(image))?;
+        let results = self.detect_batch(std::slice::from_ref(image), 1)?;
         Ok(results.into_iter().next().unwrap_or_default())
     }
 
     /// Run detection on a batch of OpenCV Mats.
-    pub fn detect_batch(&mut self, images: &[Mat]) -> Result<Vec<Vec<usls::Hbb>>> {
-        const CHUNK_SIZE: usize = 8;
+    /// `chunk_size` controls how many images are sent to the model at once.
+    pub fn detect_batch(
+        &mut self,
+        images: &[Mat],
+        chunk_size: usize,
+    ) -> Result<Vec<Vec<usls::Hbb>>> {
+        // CoreML's BNNSFilterApplyTwoInputBatch has a dtype bug in batch_matmul_kernel
+        // that reads float16 buffers as float32, causing a 2x buffer overread segfault.
+        // Certain batch sizes trigger this bug; callers should use safe_chunk_size()
+        // to compute a batch size that avoids the crash.
+        // See: https://github.com/microsoft/onnxruntime/issues/21227
+        let chunk_size = chunk_size.max(1);
         let mut final_batch_results = Vec::with_capacity(images.len());
 
-        for chunk in images.chunks(CHUNK_SIZE) {
+        for chunk in images.chunks(chunk_size) {
+            let real_count = chunk.len();
             let chunk_start = std::time::Instant::now();
-            let mut usls_images = Vec::with_capacity(chunk.len());
-            let mut corrections = Vec::with_capacity(chunk.len());
+            let mut usls_images = Vec::with_capacity(chunk_size);
+            let mut corrections = Vec::with_capacity(chunk_size);
 
             for image in chunk {
                 let dynamic_image = mat_to_dynamic_image(image)?;
@@ -62,14 +73,25 @@ impl ObjectDetector {
                 usls_images.push(usls::Image::from(dynamic_image));
             }
 
+            // Pad partial chunks with duplicates of the first image so CoreML
+            // always sees the same batch dimension and doesn't recompile the
+            // compute graph (which adds ~500-800ms per shape change).
+            if real_count < chunk_size && !usls_images.is_empty() {
+                let pad_image = mat_to_dynamic_image(&chunk[0])?;
+                for _ in real_count..chunk_size {
+                    usls_images.push(usls::Image::from(pad_image.clone()));
+                }
+            }
+
             let preprocess_duration = chunk_start.elapsed();
             let forward_start = std::time::Instant::now();
             let results = self.model.forward(&usls_images)?;
             let forward_duration = forward_start.elapsed();
 
             tracing::debug!(
-                "Batch chunk (size {}): Preprocess: {:?}, Inference: {:?}",
-                chunk.len(),
+                "Batch chunk (real={}, padded={}): Preprocess: {:?}, Inference: {:?}",
+                real_count,
+                usls_images.len(),
                 preprocess_duration,
                 forward_duration
             );

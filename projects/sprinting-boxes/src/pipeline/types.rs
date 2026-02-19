@@ -171,7 +171,8 @@ impl ProcessingState {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct RegionalPolygon {
     pub name: String,
-    pub polygon: Vec<Point>, // Global or Local based on context
+    pub polygon: Vec<Point>,           // Original polygon (global or local)
+    pub effective_polygon: Vec<Point>, // Buffered polygon for point-in-region checks
 }
 
 /// Configuration for a single crop region (e.g., left endzone, right endzone)
@@ -217,6 +218,11 @@ impl From<&CropsConfig> for Vec<CropConfig> {
                         .iter()
                         .map(convert_point)
                         .collect(),
+                    effective_polygon: crops
+                        .left_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
                 },
                 RegionalPolygon {
                     name: "right".to_string(),
@@ -225,10 +231,16 @@ impl From<&CropsConfig> for Vec<CropConfig> {
                         .iter()
                         .map(convert_point)
                         .collect(),
+                    effective_polygon: crops
+                        .right_end_zone_polygon
+                        .iter()
+                        .map(convert_point)
+                        .collect(),
                 },
                 RegionalPolygon {
                     name: "field".to_string(),
                     polygon: crops.field_polygon.iter().map(convert_point).collect(),
+                    effective_polygon: crops.field_polygon.iter().map(convert_point).collect(),
                 },
             ],
         }]

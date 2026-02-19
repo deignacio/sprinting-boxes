@@ -578,8 +578,11 @@ fn calculate_frame_metrics(frame: &mut DetectedFrame, config: &FeatureConfig) {
                 let bottom_center_y = d.bbox.y + d.bbox.h;
 
                 for region in &res.regions {
-                    if is_point_in_polygon_robust(bottom_center_x, bottom_center_y, &region.polygon)
-                    {
+                    if is_point_in_polygon_robust(
+                        bottom_center_x,
+                        bottom_center_y,
+                        &region.effective_polygon,
+                    ) {
                         match region.name.as_str() {
                             "left" => {
                                 left_c += 1;
