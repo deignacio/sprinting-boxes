@@ -6,7 +6,8 @@ export interface CliffData {
   left_emptied_first: boolean;
   right_emptied_first: boolean;
   maybe_false_positive: boolean;
-  status: "Unconfirmed" | "Confirmed" | "FalsePositive";
+  status: "Unconfirmed" | "Confirmed" | "FalsePositive" | "Halftime";
+  halftime_winner?: "light" | "dark" | null;
   manual_side_override?: "left" | "right";
   manual_color_override?: "light" | "dark";
   left_team_color?: "light" | "dark";
@@ -39,11 +40,29 @@ export function recalculateAudit(
   const sorted = [...cliffs].sort((a, b) => a.frame_index - b.frame_index);
   const result: CliffData[] = [];
   let lastValidLeftColor: string | null = null;
+  let validPointCount = 0;
 
   // Pass 1: Core Scoring and Team Assignment
   for (let i = 0; i < sorted.length; i++) {
     const cliff = sorted[i];
     const isFP = cliff.status === "FalsePositive";
+
+    if (cliff.status === "Halftime") {
+      if (cliff.halftime_winner === "light") scoreLight++;
+      else if (cliff.halftime_winner === "dark") scoreDark++;
+
+      validPointCount = 0; // Reset for second half
+
+      result.push({
+        ...cliff,
+        left_team_color: undefined,
+        right_team_color: undefined,
+        score_light: scoreLight,
+        score_dark: scoreDark,
+        is_break: false,
+      });
+      continue;
+    }
 
     if (isFP) {
       result.push({
@@ -76,8 +95,8 @@ export function recalculateAudit(
 
     lastValidLeftColor = left;
 
-    // Score update: if not first point
-    if (i > 0) {
+    // Score update: if not first point (non-FP)
+    if (validPointCount > 0) {
       let pullSide = "unknown";
       if (cliff.manual_side_override) pullSide = cliff.manual_side_override;
       else if (cliff.left_emptied_first) pullSide = "left";
@@ -89,6 +108,8 @@ export function recalculateAudit(
         else if (pullingTeam === "dark") scoreDark++;
       }
     }
+
+    validPointCount++;
 
     result.push({
       ...cliff,

@@ -27,6 +27,8 @@ interface FrameViewerProps {
     runId: string;
     allCliffs: CliffData[];
     settings: AuditSettings;
+    initialFrameIndex?: number;
+    onStateChange?: () => void;
 }
 
 const ITEM_HEIGHT = 500; // Fixed height for virtualization
@@ -36,6 +38,8 @@ const FrameViewer: React.FC<FrameViewerProps> = ({
     runId,
     allCliffs,
     settings,
+    initialFrameIndex,
+    onStateChange,
 }) => {
     const [features, setFeatures] = useState<FeatureData[]>([]);
     const [loading, setLoading] = useState(true);
@@ -59,6 +63,17 @@ const FrameViewer: React.FC<FrameViewerProps> = ({
         };
         loadFeatures();
     }, [runId]);
+
+    // Handle initial scroll
+    useEffect(() => {
+        if (initialFrameIndex != null && features.length > 0) {
+            const idx = features.findIndex(f => f.frame_index === initialFrameIndex);
+            if (idx !== -1) {
+                // Short delay to ensure list is rendered
+                setTimeout(() => scrollToFrame(idx), 100);
+            }
+        }
+    }, [initialFrameIndex, features]);
 
     // Enrich features with scores from cliffs
     const enrichedFrames = useMemo(() => {
@@ -175,6 +190,32 @@ const FrameViewer: React.FC<FrameViewerProps> = ({
         }
     };
 
+    const handleMarkFalseNegative = async (frameIndex: number) => {
+        const newCliff: CliffData = {
+            frame_index: frameIndex,
+            timestamp: "",
+            left_emptied_first: true, // Default
+            right_emptied_first: false,
+            maybe_false_positive: false,
+            status: "Confirmed",
+            score_light: 0,
+            score_dark: 0,
+            is_break: false,
+        };
+
+        try {
+            const updated = [...allCliffs, newCliff];
+            await fetch(`/api/runs/${runId}/audit/cliffs`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ cliffs: updated, settings }),
+            });
+            if (onStateChange) onStateChange();
+        } catch (err) {
+            console.error("Failed to mark false negative", err);
+        }
+    };
+
 
     if (loading) return <div className="p-8 text-slate-400">Loading frames...</div>;
     if (features.length === 0) return <div className="p-8 text-slate-400">No frames found.</div>;
@@ -260,12 +301,22 @@ const FrameViewer: React.FC<FrameViewerProps> = ({
                                 {/* Header info */}
                                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", color: frame.is_cliff ? "#fff" : "#94a3b8" }}>
                                     <div className="flex gap-4">
-                                        <span style={{ fontWeight: "bold", fontSize: "1.1rem" }}>Frame {frame.frame_index}</span>
+                                        <span style={{ fontWeight: "bold", fontSize: "1.1rem" }}>
+                                            Frame {frame.frame_index} (Score: {frame.pre_point_score.toFixed(3)})
+                                        </span>
                                         {frame.is_cliff && (
                                             <span className="bg-blue-600 text-white px-2 py-0.5 rounded text-sm">POINT DETECTED</span>
                                         )}
                                         {!frame.is_cliff && frame.cliff_status === "FalsePositive" && (
                                             <span className="bg-red-900 text-red-200 px-2 py-0.5 rounded text-sm">REJECTED</span>
+                                        )}
+                                        {!frame.is_cliff && frame.cliff_status !== "FalsePositive" && (
+                                            <button
+                                                onClick={() => handleMarkFalseNegative(frame.frame_index)}
+                                                className="bg-green-700 hover:bg-green-600 text-white px-2 py-0.5 rounded text-sm cursor-pointer"
+                                            >
+                                                Mark False Negative
+                                            </button>
                                         )}
                                     </div>
                                     <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
@@ -316,11 +367,6 @@ const FrameViewer: React.FC<FrameViewerProps> = ({
                                             </div>
                                         )}
                                     </div>
-
-                                    {/* CoM/StdDev are now rendered by backend */
-                                        false && frame.com_x != null && frame.com_y != null && frame.std_dev != null && (
-                                            <></>
-                                        )}
                                 </div>
                             </div>
                         );

@@ -99,6 +99,13 @@ fn generate_offsets(total_size: i32, tile_size: i32, stride: i32) -> Vec<i32> {
 
     offsets.sort();
     offsets.dedup();
+    tracing::debug!(
+        "generate_offsets: size={}, tile={}, stride={} => {:?}",
+        total_size,
+        tile_size,
+        stride,
+        offsets
+    );
     offsets
 }
 
@@ -432,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_hbb_name_lifetime() {
-        let mut d1_transformed = {
+        let d1_transformed = {
             let mut d1 = usls::Hbb::default()
                 .with_xyxy(10.0, 10.0, 50.0, 50.0)
                 .with_confidence(0.9);

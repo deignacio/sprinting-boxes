@@ -285,19 +285,30 @@ fn calculate_pre_point_score(
 /// and heuristic analysis before finalizing each frame.
 pub fn feature_worker(
     rx: Receiver<DetectedFrame>,
-    tx: Sender<DetectedFrame>,
+    tx_f: Sender<DetectedFrame>,
     config: FeatureConfig,
     state: Arc<ProcessingState>,
+    mode: crate::pipeline::types::PipelineMode,
 ) -> Result<()> {
     use std::io::Write;
 
-    // Create CSV files
-    let features_path = config.output_dir.join("features.csv");
+    // Create CSV files based on mode
+    let target_features = match mode {
+        crate::pipeline::types::PipelineMode::Pull => "pull_features.csv",
+        crate::pipeline::types::PipelineMode::Field => "features.csv",
+    };
+    let target_points = match mode {
+        crate::pipeline::types::PipelineMode::Pull => "pull_points.csv",
+        crate::pipeline::types::PipelineMode::Field => "points.csv",
+    };
+
+    let features_path = config.output_dir.join(target_features);
+    let points_path = config.output_dir.join(target_points);
     tracing::info!(
-        "Feature worker started. output_dir: {:?}",
-        config.output_dir
+        "Feature worker started. output_dir: {:?}, mode: {:?}",
+        config.output_dir,
+        mode
     );
-    let points_path = config.output_dir.join("points.csv");
 
     let mut features_csv = std::fs::File::create(&features_path)?;
     writeln!(
@@ -311,11 +322,30 @@ pub fn feature_worker(
         "frame_index,is_cliff,left_side_emptied_first,right_side_emptied_first"
     )?;
 
-    let mut cliff_state = CliffDetectorState::new(CliffDetectorConfig::default());
     let mut input_buffer: BTreeMap<usize, DetectedFrame> = BTreeMap::new();
     let mut next_input_id = 0;
     let mut lookahead_buffer: Vec<DetectedFrame> = Vec::new();
     let mut history_buffer: Vec<FrameHistory> = Vec::new();
+
+    let mut cliff_state = CliffDetectorState::new(CliffDetectorConfig::default());
+    // Load pull detections for merging in Field mode
+    let mut pull_data_map: BTreeMap<usize, DetectedFrame> = BTreeMap::new();
+    if mode == crate::pipeline::types::PipelineMode::Field {
+        let pull_path = config.output_dir.join("pull_detections.json");
+        if pull_path.exists() {
+            if let Ok(json) = std::fs::read_to_string(&pull_path) {
+                if let Ok(pull_list) = serde_json::from_str::<Vec<DetectedFrame>>(&json) {
+                    for f in pull_list {
+                        pull_data_map.insert(f.id, f);
+                    }
+                    tracing::info!(
+                        "Feature worker: Loaded {} frames from pull_detections.json",
+                        pull_data_map.len()
+                    );
+                }
+            }
+        }
+    }
 
     for frame in rx {
         let start_inst = Instant::now();
@@ -324,11 +354,32 @@ pub fn feature_worker(
             break;
         }
 
+        let mut frame = frame;
+        if mode == crate::pipeline::types::PipelineMode::Field {
+            if let Some(pull_frame) = pull_data_map.get(&frame.id) {
+                // Merge pull detections (specifically end-zone ones) into the new frame
+                if let Some(new_ov) = frame.results.iter_mut().find(|r| r.suffix == "overview") {
+                    // Find the overview crop in the pull data and take all its detections that were in_end_zone.
+                    if let Some(pull_ov) =
+                        pull_frame.results.iter().find(|r| r.suffix == "overview")
+                    {
+                        let ez_dets: Vec<_> = pull_ov
+                            .detections
+                            .iter()
+                            .filter(|d| d.in_end_zone)
+                            .cloned()
+                            .collect();
+                        new_ov.detections.extend(ez_dets);
+                    }
+                }
+            }
+        }
+
         input_buffer.insert(frame.id, frame);
 
         while let Some(mut current_frame) = input_buffer.remove(&next_input_id) {
-            // Calculate metrics (counts, CoM, StdDev)
-            calculate_frame_metrics(&mut current_frame, &config);
+            let (_left_raw, _right_raw, _field_raw, _pre_point_score, _com_x_opt, _com_y_opt) =
+                calculate_frame_metrics(&mut current_frame, &config, mode);
 
             // Calculate deltas
             calculate_deltas(&mut current_frame, history_buffer.last());
@@ -468,7 +519,7 @@ pub fn feature_worker(
                 let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
                 state.update_stage("feature", 1, duration_ms);
 
-                if tx.send(frame).is_err() {
+                if tx_f.send(frame.clone()).is_err() {
                     tracing::error!("Feature worker: failed to send frame to finalize");
                     break;
                 }
@@ -485,7 +536,8 @@ pub fn feature_worker(
         if let Some(mut current_frame) = input_buffer.remove(&next_input_id) {
             // Process the frame
             // Calculate metrics
-            calculate_frame_metrics(&mut current_frame, &config);
+            let (_left_raw, _right_raw, _field_raw, _pre_point_score, _com_x_opt, _com_y_opt) =
+                calculate_frame_metrics(&mut current_frame, &config, mode);
 
             // Calculate deltas
             calculate_deltas(&mut current_frame, history_buffer.last());
@@ -546,7 +598,7 @@ pub fn feature_worker(
             )?;
         }
 
-        let _ = tx.send(frame);
+        let _ = tx_f.send(frame);
     }
 
     tracing::info!("Feature worker finished gracefully");
@@ -554,7 +606,11 @@ pub fn feature_worker(
 }
 
 /// Helper: Calculate metrics for a single frame
-fn calculate_frame_metrics(frame: &mut DetectedFrame, config: &FeatureConfig) {
+fn calculate_frame_metrics(
+    frame: &mut DetectedFrame,
+    config: &FeatureConfig,
+    mode: crate::pipeline::types::PipelineMode,
+) -> (f32, f32, f32, f32, Option<f32>, Option<f32>) {
     let mut left_count_raw = 0.0;
     let mut right_count_raw = 0.0;
     let mut field_count_raw = 0.0;
@@ -596,38 +652,37 @@ fn calculate_frame_metrics(frame: &mut DetectedFrame, config: &FeatureConfig) {
 
                     // First pass: check EZ regions
                     for region in &res.regions {
-                        if region.name == "left" || region.name == "right" {
-                            if is_point_in_polygon_robust(
+                        if (region.name == "left" || region.name == "right")
+                            && is_point_in_polygon_robust(
                                 bottom_center_x,
                                 bottom_center_y,
                                 &region.effective_polygon,
-                            ) {
-                                d.in_end_zone = true;
-                                if region.name == "left" {
-                                    left_c += 1;
-                                } else {
-                                    right_c += 1;
-                                }
-                                matched = true;
-                                break;
+                            )
+                        {
+                            d.in_end_zone = true;
+                            if region.name == "left" {
+                                left_c += 1;
+                            } else {
+                                right_c += 1;
                             }
+                            matched = true;
+                            break;
                         }
                     }
 
                     // Second pass: check field region if not already matched
                     if !matched {
                         for region in &res.regions {
-                            if region.name == "field" {
-                                if is_point_in_polygon_robust(
+                            if region.name == "field"
+                                && is_point_in_polygon_robust(
                                     bottom_center_x,
                                     bottom_center_y,
                                     &region.effective_polygon,
-                                ) {
-                                    field_c += 1;
-                                    d.in_field = true;
-                                    matched = true;
-                                    break;
-                                }
+                                )
+                            {
+                                field_c += 1;
+                                d.in_field = true;
+                                break;
                             }
                         }
                     }
@@ -724,39 +779,49 @@ fn calculate_frame_metrics(frame: &mut DetectedFrame, config: &FeatureConfig) {
         config.team_size,
     );
 
-    // CoM/StdDev
-    let (com_x, com_y, std_dev) = if !points_x.is_empty() {
-        let count = points_x.len() as f32;
-        let sum_x: f32 = points_x.iter().sum();
-        let sum_y: f32 = points_y.iter().sum();
-        let cx = sum_x / count;
-        let cy = sum_y / count;
+    // CoM/StdDev: Only available in Field mode
+    let (com_x, com_y, std_dev) =
+        if mode == crate::pipeline::types::PipelineMode::Field && !points_x.is_empty() {
+            let count = points_x.len() as f32;
+            let sum_x: f32 = points_x.iter().sum();
+            let sum_y: f32 = points_y.iter().sum();
+            let cx = sum_x / count;
+            let cy = sum_y / count;
 
-        let variance_sum: f32 = points_x
-            .iter()
-            .zip(points_y.iter())
-            .map(|(px, py)| {
-                let dx = px - cx;
-                let dy = py - cy;
-                dx * dx + dy * dy
-            })
-            .sum();
-        let sd_raw = (variance_sum / count).sqrt();
+            let variance_sum: f32 = points_x
+                .iter()
+                .zip(points_y.iter())
+                .map(|(px, py)| {
+                    let dx = px - cx;
+                    let dy = py - cy;
+                    dx * dx + dy * dy
+                })
+                .sum();
+            let sd_raw = (variance_sum / count).sqrt();
 
-        // Normalization
-        let diagonal = (crop_w * crop_w + crop_h * crop_h).sqrt();
-        let w = if crop_w > 0.0 { crop_w } else { 1.0 };
-        let h = if crop_h > 0.0 { crop_h } else { 1.0 };
-        let diag_norm = if diagonal > 0.0 { diagonal / 3.0 } else { 1.0 };
+            // Normalization
+            let diagonal = (crop_w * crop_w + crop_h * crop_h).sqrt();
+            let w = if crop_w > 0.0 { crop_w } else { 1.0 };
+            let h = if crop_h > 0.0 { crop_h } else { 1.0 };
+            let diag_norm = if diagonal > 0.0 { diagonal / 3.0 } else { 1.0 };
 
-        (Some(cx / w), Some(cy / h), Some(sd_raw / diag_norm))
-    } else {
-        (None, None, None)
-    };
+            (Some(cx / w), Some(cy / h), Some(sd_raw / diag_norm))
+        } else {
+            (None, None, None)
+        };
 
     frame.com_x = com_x;
     frame.com_y = com_y;
     frame.std_dev = std_dev;
+
+    (
+        left_count_raw,
+        right_count_raw,
+        field_count_raw,
+        frame.pre_point_score,
+        com_x,
+        com_y,
+    )
 }
 
 /// Helper: Calculate deltas based on history

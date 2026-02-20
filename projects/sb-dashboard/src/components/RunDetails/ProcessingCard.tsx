@@ -9,7 +9,7 @@ interface ProcessingCardProps {
   processingError: string | null;
   selectedBackend: string;
   onBackendChange: (backend: string) => void;
-  handleStartProcessing: (backend: string) => void;
+  handleStartProcessing: (backend: string, mode?: "pull" | "field") => void;
   handleStopProcessing: () => void;
   handleUpdateWorkers: (stage: string, delta: number) => void;
 }
@@ -469,15 +469,24 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
               </div>
             )}
             <button
-              onClick={() => handleStartProcessing(selectedBackend)}
+              onClick={() => handleStartProcessing(selectedBackend, "pull")}
               className="btn btn-primary"
-              style={{ width: "100%" }}
+              style={{ width: "100%", marginBottom: "0.5rem" }}
               disabled={processingProgress?.is_complete}
             >
               <Play size={18} />
               {processingProgress?.is_complete
-                ? "Processing Complete"
-                : "Start Processing"}
+                ? "Pull Processing Complete"
+                : "Start Pull Pipeline"}
+            </button>
+            <button
+              onClick={() => handleStartProcessing(selectedBackend, "field")}
+              className="btn btn-secondary"
+              style={{ width: "100%", borderColor: "var(--accent-secondary)", color: "var(--accent-secondary)" }}
+              title="Runs Field Detection using existing crops after auditing."
+            >
+              <Play size={18} />
+              Start Field Pipeline
             </button>
           </>
         )

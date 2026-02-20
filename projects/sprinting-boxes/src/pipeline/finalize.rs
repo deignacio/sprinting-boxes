@@ -159,18 +159,49 @@ pub fn finalize_worker(
     output_dir: PathBuf,
     save_crops: bool,
     state: Arc<ProcessingState>,
+    mode: crate::pipeline::types::PipelineMode,
 ) -> Result<()> {
     let crops_dir = output_dir.join("crops");
-    if save_crops {
-        fs::create_dir_all(&crops_dir)?;
+    if save_crops && mode == crate::pipeline::types::PipelineMode::Pull {
+        // Only save raw image crops during the initial Pull pass
+        let _ = fs::create_dir_all(&crops_dir);
     }
 
     let mut all_results = Vec::new();
+
+    // In Field mode, try to load the existing pull_detections to merge into
+    if mode == crate::pipeline::types::PipelineMode::Field {
+        let pull_path = output_dir.join("pull_detections.json");
+        if pull_path.exists() {
+            if let Ok(json) = fs::read_to_string(&pull_path) {
+                if let Ok(pull_data) = serde_json::from_str::<Vec<DetectedFrame>>(&json) {
+                    tracing::info!(
+                        "Loaded {} existing frames from pull_detections.json to merge",
+                        pull_data.len()
+                    );
+                    // Pre-allocate assuming we process the same frame sequence
+                    all_results = pull_data;
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Field mode started but pull_detections.json not found at {:?}",
+                pull_path
+            );
+        }
+    }
+
     tracing::info!(
-        "Finalize worker started. output_dir: {:?}, save_crops: {}",
+        "Finalize worker started. output_dir: {:?}, save_crops: {:?}, mode: {:?}",
         output_dir,
-        save_crops
+        save_crops,
+        mode
     );
+
+    let target_filename = match mode {
+        crate::pipeline::types::PipelineMode::Pull => "pull_detections.json",
+        crate::pipeline::types::PipelineMode::Field => "detections.json",
+    };
 
     for frame in rx {
         let start_inst = Instant::now();
@@ -179,50 +210,56 @@ pub fn finalize_worker(
             break;
         }
 
-        for result in &frame.results {
-            if !save_crops {
-                continue;
-            }
-
-            if let Some(img) = &result.image {
-                // Save raw crop (no annotations)
-                let filename = format!("frame_{:06}_{}.jpg", frame.id, result.suffix);
-                let path = crops_dir.join(&filename);
-                if let Err(e) =
-                    opencv::imgcodecs::imwrite(path.to_str().unwrap(), img, &Vector::new())
-                {
-                    tracing::warn!("Failed to write crop image {}: {}", filename, e);
+        // We only save raw crop images in Pull mode
+        if save_crops && mode == crate::pipeline::types::PipelineMode::Pull {
+            for result in &frame.results {
+                if let Some(img) = &result.image {
+                    let filename = format!("frame_{:06}_{}.jpg", frame.id, result.suffix);
+                    let path = crops_dir.join(&filename);
+                    if let Err(e) =
+                        opencv::imgcodecs::imwrite(path.to_str().unwrap(), img, &Vector::new())
+                    {
+                        tracing::warn!("Failed to write crop image {}: {}", filename, e);
+                    }
                 }
             }
         }
 
-        all_results.push(frame.clone());
+        if mode == crate::pipeline::types::PipelineMode::Field {
+            // MERGE LOGIC: We already loaded `pull_detections.json` into `all_results`.
+            // The incoming `frame` from FeatureWorker is already merged (metrics + detections).
+            if let Some(idx) = all_results.iter().position(|f| f.id == frame.id) {
+                all_results[idx] = frame.clone();
+            } else {
+                all_results.push(frame.clone());
+            }
+        } else {
+            // Pull mode: just accumulate
+            all_results.push(frame.clone());
+        }
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
         state.update_stage("finalize", 1, duration_ms);
 
-        // Periodically save detections.json (every 25 frames) so dashboard works mid-run
+        // Periodically save
         if !all_results.is_empty() && all_results.len() % 25 == 0 {
-            let results_path = output_dir.join("detections.json");
-            match serde_json::to_string(&all_results) {
-                Ok(json) => {
-                    let _ = fs::write(results_path, json);
-                }
-                Err(e) => tracing::warn!("Failed to serialize incremental detections: {}", e),
-            }
+            let results_path = output_dir.join(target_filename);
+            let json = serde_json::to_string(&all_results).unwrap_or_default();
+            let _ = fs::write(results_path, json);
         }
     }
 
     tracing::info!(
-        "Finalize worker finished processing {} frames. Saving detections.json...",
-        all_results.len()
+        "Finalize worker finished processing {} frames. Saving {}...",
+        all_results.len(),
+        target_filename
     );
 
-    // Save final detections.json
-    let results_path = output_dir.join("detections.json");
+    // Save final detections
+    let results_path = output_dir.join(target_filename);
     let json = serde_json::to_string_pretty(&all_results)?;
     fs::write(&results_path, json)?;
-    tracing::info!("Saved final detections.json to {:?}", results_path);
+    tracing::info!("Saved final {} to {:?}", target_filename, results_path);
 
     state.is_complete.store(true, Ordering::Relaxed);
     state.is_active.store(false, Ordering::Relaxed);

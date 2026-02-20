@@ -384,10 +384,8 @@ impl FfmpegReader {
     }
 
     /// Process a decoded frame: transfer from GPU if needed, and scale/convert to BGR24.
-    /// Processes a decoded frame by:
-    /// 1. Transferring it from GPU to CPU memory if hardware acceleration is active.
-    /// 2. Converting it to the target BGR format if needed.
-    /// If hardware transfer fails, it logs a warning and continues with the GPU frame (which will likely fail later).
+    /// If hardware transfer fails, it logs a warning and continues with the GPU
+    /// frame (which will likely fail later).
     fn process_decoded_frame(
         &mut self,
         frame: ffmpeg_next::util::frame::Video,

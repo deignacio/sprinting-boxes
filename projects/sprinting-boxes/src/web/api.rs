@@ -324,6 +324,8 @@ pub struct UpdateWorkerRequest {
 pub struct StartProcessingRequest {
     #[serde(default = "default_backend")]
     pub backend: String,
+    #[serde(default)]
+    pub mode: crate::pipeline::types::PipelineMode,
 }
 
 fn default_backend() -> String {
@@ -348,9 +350,13 @@ pub async fn start_processing_handler(
     Path(run_id): Path<String>,
     body: Option<Json<StartProcessingRequest>>,
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let backend = body
-        .map(|Json(b)| b.backend)
-        .unwrap_or_else(|| "opencv".to_string());
+    let (backend, mode) = match body {
+        Some(Json(b)) => (b.backend, b.mode),
+        None => (
+            "opencv".to_string(),
+            crate::pipeline::types::PipelineMode::Pull,
+        ),
+    };
 
     let output_root = std::path::Path::new(&args.output_root);
     let video_root = std::path::Path::new(&args.video_root);
@@ -367,9 +373,10 @@ pub async fn start_processing_handler(
 
     // Validate dependencies
     let deps = run_context.validate_process_run_dependencies();
-    if deps.iter().any(|d| !d.valid) {
+    if mode == crate::pipeline::types::PipelineMode::Pull && deps.iter().any(|d| !d.valid) {
         return Err(axum::http::StatusCode::PRECONDITION_FAILED);
     }
+    // TODO: Add Field mode dependency checking
 
     // Start processing
     match crate::pipeline::orchestrator::start_processing(
@@ -377,6 +384,7 @@ pub async fn start_processing_handler(
         video_root,
         &args.model_path,
         &backend,
+        mode,
     ) {
         Ok(state) => Ok(Json(state.to_progress_json())),
         Err(e) => {

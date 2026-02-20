@@ -8,9 +8,10 @@ import {
 interface AuditViewProps {
   runId: string;
   onCliffClick: (cliff: CliffData) => void;
+  onViewClick?: (frameIndex: number) => void;
 }
 
-export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
+export default function AuditView({ runId, onCliffClick, onViewClick }: AuditViewProps) {
   const [cliffs, setCliffs] = useState<CliffData[]>([]);
   const [settings, setSettings] = useState<AuditSettings>({
     light_team_name: "Light",
@@ -88,6 +89,37 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
   const handleStatusChange = (idx: number, newStatus: CliffData["status"]) => {
     const updated = cliffs.map((c, i) => {
       if (i === idx) return { ...c, status: newStatus };
+      return c;
+    });
+    const processed = recalculateAudit(updated, settings);
+    syncAuditData(processed);
+  };
+
+  const handleInsertHalftime = (idx: number) => {
+    const nextPoint = cliffs[idx];
+    if (!nextPoint) return;
+
+    const newHalftime: CliffData = {
+      frame_index: nextPoint.frame_index - 1,
+      timestamp: "", // Backend will fill this
+      left_emptied_first: false,
+      right_emptied_first: false,
+      maybe_false_positive: false,
+      status: "Halftime",
+      halftime_winner: null,
+      score_light: 0,
+      score_dark: 0,
+      is_break: false,
+    };
+
+    const updated = [...cliffs, newHalftime];
+    const processed = recalculateAudit(updated, settings);
+    syncAuditData(processed);
+  };
+
+  const handleHalftimeWinnerChange = (idx: number, winner: "light" | "dark" | null) => {
+    const updated = cliffs.map((c, i) => {
+      if (i === idx) return { ...c, halftime_winner: winner };
       return c;
     });
     const processed = recalculateAudit(updated, settings);
@@ -612,10 +644,15 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
             {cliffs.map((cliff, idx) => {
               const isFP = cliff.status === "FalsePositive";
               const isConfirmed = cliff.status === "Confirmed";
+              const isHalftime = cliff.status === "Halftime";
 
               let pullSide = "Unknown";
               let pullTeam = "";
-              if (cliff.manual_side_override) {
+
+              if (isHalftime) {
+                pullSide = "N/A";
+                pullTeam = "HALFTIME";
+              } else if (cliff.manual_side_override) {
                 pullSide = cliff.manual_side_override.toUpperCase();
                 const side = cliff.manual_side_override;
                 const leftColor = cliff.left_team_color || "light";
@@ -638,7 +675,7 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
                     borderBottom: "1px solid #334155",
                     cursor: "pointer",
                     opacity: isFP ? 0.5 : 1,
-                    background: isConfirmed ? "#1e40af20" : "transparent",
+                    background: isHalftime ? "#422006" : (isConfirmed ? "#1e40af20" : "transparent"),
                   }}
                 >
                   <td style={{ padding: "12px", color: "#f1f5f9" }}>
@@ -675,6 +712,27 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
                       <span style={{ color: "#94a3b8", fontStyle: "italic" }}>
                         Skipped
                       </span>
+                    ) : isHalftime ? (
+                      <select
+                        value={cliff.halftime_winner || ""}
+                        onChange={(e) =>
+                          handleHalftimeWinnerChange(
+                            idx,
+                            e.target.value as "light" | "dark" | null,
+                          )
+                        }
+                        style={{
+                          padding: "4px 8px",
+                          background: "#0f172a",
+                          border: "1px solid #334155",
+                          borderRadius: "4px",
+                          color: "#f1f5f9",
+                        }}
+                      >
+                        <option value="">No Team Scored</option>
+                        <option value="light">{settings.light_team_name}</option>
+                        <option value="dark">{settings.dark_team_name}</option>
+                      </select>
                     ) : (
                       <select
                         value={cliff.left_team_color || "light"}
@@ -750,6 +808,21 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
                           Unlock
                         </button>
                       </>
+                    ) : isHalftime ? (
+                      <button
+                        onClick={() => handleStatusChange(idx, "FalsePositive")}
+                        style={{
+                          padding: "4px 12px",
+                          background: "#dc2626",
+                          color: "white",
+                          border: "none",
+                          borderRadius: "4px",
+                          cursor: "pointer",
+                          fontSize: "0.75rem",
+                        }}
+                      >
+                        Delete
+                      </button>
                     ) : isFP ? (
                       <>
                         <span
@@ -781,6 +854,20 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
                     ) : (
                       <div style={{ display: "flex", gap: "8px" }}>
                         <button
+                          onClick={() => onViewClick && onViewClick(cliff.frame_index)}
+                          style={{
+                            padding: "4px 12px",
+                            background: "#3b82f6",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                            fontSize: "0.75rem",
+                          }}
+                        >
+                          View
+                        </button>
+                        <button
                           onClick={() => handleStatusChange(idx, "Confirmed")}
                           style={{
                             padding: "4px 12px",
@@ -793,6 +880,20 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
                           }}
                         >
                           Confirm
+                        </button>
+                        <button
+                          onClick={() => handleInsertHalftime(idx)}
+                          style={{
+                            padding: "4px 12px",
+                            background: "#fbbf24",
+                            color: "#000",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                            fontSize: "0.75rem",
+                          }}
+                        >
+                          + Halftime
                         </button>
                         <button
                           onClick={() =>
@@ -819,6 +920,6 @@ export default function AuditView({ runId, onCliffClick }: AuditViewProps) {
           </tbody>
         </table>
       </div>
-    </div>
+    </div >
   );
 }

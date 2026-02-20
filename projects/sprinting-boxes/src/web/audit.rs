@@ -21,7 +21,8 @@ pub struct CliffData {
     pub left_emptied_first: bool,
     pub right_emptied_first: bool,
     pub maybe_false_positive: bool,
-    pub status: String, // "Unconfirmed", "Confirmed", "FalsePositive"
+    pub status: String, // "Unconfirmed", "Confirmed", "FalsePositive", "Halftime"
+    pub halftime_winner: Option<String>, // "light" or "dark"
     pub manual_side_override: Option<String>, // "left" or "right"
     pub manual_color_override: Option<String>, // "light" or "dark" (explicit override)
     pub left_team_color: Option<String>, // "light" or "dark" (inferred or overridden)
@@ -64,10 +65,13 @@ fn load_or_init_audit_state(
 ) -> Result<AuditState, StatusCode> {
     let output_dir = &run_context.output_dir;
 
-    // Load points.csv
-    let points_path = output_dir.join("points.csv");
+    // Load points.csv, fallback to pull_points.csv
+    let mut points_path = output_dir.join("points.csv");
     if !points_path.exists() {
-        return Err(StatusCode::NOT_FOUND);
+        points_path = output_dir.join("pull_points.csv");
+        if !points_path.exists() {
+            return Err(StatusCode::NOT_FOUND);
+        }
     }
 
     let mut cliffs = Vec::new();
@@ -102,6 +106,7 @@ fn load_or_init_audit_state(
             right_emptied_first,
             maybe_false_positive: !left_emptied_first && !right_emptied_first,
             status: "Unconfirmed".to_string(),
+            halftime_winner: None,
             manual_side_override: None,
             manual_color_override: None,
             left_team_color: None,
@@ -385,15 +390,38 @@ fn recalculate_audit(
     let mut score_light = settings.initial_score_light;
     let mut score_dark = settings.initial_score_dark;
     let mut last_valid_left_color: Option<String> = None;
+    let mut valid_point_count = 0;
 
     let mut sorted_cliffs = cliffs.to_vec();
     sorted_cliffs.sort_by_key(|c| c.frame_index);
 
     // Pass 1: Core scoring and team assignment
-    for (i, cliff) in sorted_cliffs.iter().enumerate() {
+    for cliff in sorted_cliffs.iter() {
         let is_fp = cliff.status == "FalsePositive";
 
         let total_offset = parse_duration_to_secs(&settings.video_start_time);
+
+        if cliff.status == "Halftime" {
+            if cliff.halftime_winner.as_deref() == Some("light") {
+                score_light += 1;
+            } else if cliff.halftime_winner.as_deref() == Some("dark") {
+                score_dark += 1;
+            }
+
+            valid_point_count = 0; // Reset for second half
+
+            result.push(CliffData {
+                timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
+                left_team_color: None,
+                right_team_color: None,
+                score_light,
+                score_dark,
+                is_break: false,
+                ..cliff.clone()
+            });
+            continue;
+        }
+
         if is_fp {
             result.push(CliffData {
                 timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
@@ -407,7 +435,6 @@ fn recalculate_audit(
             continue;
         }
 
-        // Determine team colors
         // Determine team colors
         let (left, right) = if let Some(ref override_color) = cliff.manual_color_override {
             // Explicit override takes precedence
@@ -438,7 +465,7 @@ fn recalculate_audit(
         last_valid_left_color = Some(left.clone());
 
         // Score update (if not first point)
-        if i > 0 {
+        if valid_point_count > 0 {
             let pull_side = cliff
                 .manual_side_override
                 .as_deref()
@@ -459,6 +486,8 @@ fn recalculate_audit(
                 }
             }
         }
+
+        valid_point_count += 1;
 
         result.push(CliffData {
             timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
@@ -618,14 +647,19 @@ pub async fn serve_run_crop_handler(
         let frame_index: usize = parts[0].parse().map_err(|_| StatusCode::BAD_REQUEST)?;
         let suffix = parts[1];
 
-        // Load detections.json to get metadata for this frame
-        let detections_path = run_context.output_dir.join("detections.json");
+        // Load detections.json to get metadata for this frame. Fallback to pull_detections.json if missing.
+        let mut detections_path = run_context.output_dir.join("detections.json");
         if !detections_path.exists() {
-            tracing::warn!(
-                "detections.json missing for run {}, cannot annotate",
-                run_id
-            );
-            return Err(StatusCode::NOT_FOUND);
+            let pull_path = run_context.output_dir.join("pull_detections.json");
+            if pull_path.exists() {
+                detections_path = pull_path;
+            } else {
+                tracing::warn!(
+                    "detections.json and pull_detections.json missing for run {}, cannot annotate",
+                    run_id
+                );
+                return Err(StatusCode::NOT_FOUND);
+            }
         }
 
         let detections_json =
@@ -696,9 +730,14 @@ pub async fn get_features_handler(
         .ok_or(StatusCode::NOT_FOUND)?;
     let output_dir = &run_context.output_dir;
 
-    let features_path = output_dir.join("features.csv");
+    let mut features_path = output_dir.join("features.csv");
     if !features_path.exists() {
-        return Ok(Json(Vec::new()));
+        let pull_features_path = output_dir.join("pull_features.csv");
+        if pull_features_path.exists() {
+            features_path = pull_features_path;
+        } else {
+            return Ok(Json(Vec::new()));
+        }
     }
 
     let content =
@@ -786,10 +825,13 @@ pub async fn get_youtube_chapters_handler(
 
     let mut confirmed_index = 0;
     for cliff in enriched_cliffs.iter() {
-        if cliff.status != "Confirmed" {
+        if cliff.status != "Confirmed" && cliff.status != "Halftime" {
             continue;
         }
-        confirmed_index += 1;
+
+        if cliff.status == "Confirmed" {
+            confirmed_index += 1;
+        }
 
         let timestamp = format_timestamp(cliff.frame_index, sample_rate, offset);
         let description = get_point_description(cliff, confirmed_index, &audit_state.settings);
@@ -806,7 +848,18 @@ fn get_point_description(
     point_index: usize,
     settings: &AuditSettings,
 ) -> String {
+    if cliff.status == "Halftime" {
+        return format!(
+            "Halftime ({} {} - {} {})",
+            &settings.light_team_name,
+            cliff.score_light,
+            &settings.dark_team_name,
+            cliff.score_dark
+        );
+    }
+
     let mut description = format!("Point {}", point_index);
+    // ... (rest of the logic remains same for points)
 
     let pull_side = cliff
         .manual_side_override
@@ -880,7 +933,7 @@ pub async fn get_studio_clips_handler(
     let confirmed_cliffs =
         recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate)
             .into_iter()
-            .filter(|c| c.status == "Confirmed")
+            .filter(|c| c.status == "Confirmed" || c.status == "Halftime")
             .collect::<Vec<_>>();
 
     let mut point_clips = Vec::new();
@@ -1036,7 +1089,7 @@ fn generate_vlc_playlist(args: &Args, run_id: &str) -> Result<String, StatusCode
     let confirmed_cliffs =
         recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate)
             .into_iter()
-            .filter(|c| c.status == "Confirmed")
+            .filter(|c| c.status == "Confirmed" || c.status == "Halftime")
             .collect::<Vec<_>>();
 
     let mut m3u = String::from("#EXTM3U\n");

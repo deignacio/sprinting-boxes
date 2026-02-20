@@ -25,6 +25,7 @@ const RunDetailsPage: React.FC = () => {
     null,
   );
   const [selectedBackend, setSelectedBackend] = useState("opencv");
+  const [frameViewerInitialIndex, setFrameViewerInitialIndex] = useState<number | undefined>(undefined);
 
   const {
     run,
@@ -284,7 +285,14 @@ const RunDetailsPage: React.FC = () => {
 
 
           {view === "audit" && (
-            <AuditView runId={id!} onCliffClick={handleCliffClick} />
+            <AuditView
+              runId={id!}
+              onCliffClick={handleCliffClick}
+              onViewClick={(frame) => {
+                setFrameViewerInitialIndex(frame);
+                setView("frame_viewer");
+              }}
+            />
           )}
 
           {view === "frame_viewer" && (
@@ -295,6 +303,8 @@ const RunDetailsPage: React.FC = () => {
                 runId={id!}
                 allCliffs={allCliffs}
                 settings={auditSettings}
+                initialFrameIndex={frameViewerInitialIndex}
+                onStateChange={loadAuditData}
               />
             )
           )}

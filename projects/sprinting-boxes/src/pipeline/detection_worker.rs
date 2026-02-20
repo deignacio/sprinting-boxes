@@ -11,26 +11,29 @@ use opencv::prelude::MatTraitConst;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Worker that runs object detection on preprocessed frames.
-///
-/// It can operate in two modes:
-/// 1. Standard detection: runs the model once on the whole crop.
-/// 2. Slicing detection: splits the crop into overlapping tiles (SAHI tactic),
-///    runs detection on each tile, and merges results using NMS.
+/// Parameters for the detection worker to avoid too many arguments clippy warning.
+pub struct DetectionParams {
+    pub model_path: String,
+    pub min_conf: f32,
+    pub slice_config: SliceConfig,
+    pub regions_to_detect: Option<Vec<String>>,
+}
+
 pub fn detection_worker(
     rx: Receiver<PreprocessedFrame>,
     tx: Sender<DetectedFrame>,
-    model_path: &str,
-    min_conf: f32,
-    slice_config: SliceConfig,
+    params: DetectionParams,
     state: Arc<ProcessingState>,
     target_count: Arc<std::sync::atomic::AtomicUsize>,
-    regions_to_detect: Option<Vec<String>>, // NEW
 ) -> Result<()> {
     // Load Yolo model
-    let mut detector = ObjectDetector::new(model_path)
+    let mut detector = ObjectDetector::new(&params.model_path)
         .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
-    let slicing_enabled = slice_config.is_enabled();
+    let slicing_enabled = params.slice_config.is_enabled();
+    tracing::info!(
+        "Detection worker started with slice_config: {:?}",
+        params.slice_config
+    );
 
     for frame in rx {
         // Handle empty/failed frames from upstream by passing through
@@ -39,7 +42,10 @@ pub fn detection_worker(
         }
 
         let default_targets = vec!["left".to_string(), "right".to_string(), "field".to_string()];
-        let targets = regions_to_detect.as_ref().unwrap_or(&default_targets);
+        let targets = params
+            .regions_to_detect
+            .as_ref()
+            .unwrap_or(&default_targets);
         let start_inst = Instant::now();
 
         // 1. Tile Generation Phase: Collect tiles from all crops
@@ -51,8 +57,12 @@ pub fn detection_worker(
 
         for (crop_index, crop) in frame.crops.iter().enumerate() {
             let regions_to_tile = if crop.suffix == "overview" {
-                // Overview: only tile in field region (EZ crops handle end zones)
-                // However, we check if "field" is in targets.
+                // Overview: only process if explicitly requested
+                if !targets.contains(&"overview".to_string()) {
+                    continue;
+                }
+
+                // Field mode usually: only tile regions that are in targets (like 'field')
                 let matched_regions: Vec<_> = crop
                     .regions
                     .iter()
@@ -70,12 +80,19 @@ pub fn detection_worker(
                         .collect::<Vec<_>>(),
                 )
             } else {
-                // EZ crops (left/right): no region filtering — the entire crop IS the region
+                // EZ crops (left/right): skip if not in targets
+                if !targets.contains(&crop.suffix) {
+                    continue;
+                }
                 None
             };
 
             if slicing_enabled {
-                let tiles = generate_tiles(&crop.image, &slice_config, regions_to_tile.as_deref())?;
+                let tiles = generate_tiles(
+                    &crop.image,
+                    &params.slice_config,
+                    regions_to_tile.as_deref(),
+                )?;
                 for tile in tiles {
                     all_queued_tiles.push(QueuedTile { crop_index, tile });
                 }
@@ -94,6 +111,12 @@ pub fn detection_worker(
             }
         }
 
+        tracing::debug!(
+            "Detection worker: {} total tiles for frame {}",
+            all_queued_tiles.len(),
+            frame.id
+        );
+
         // 2. Inference Phase: Batch detect all collected tiles
         let mut detections_by_crop = vec![Vec::new(); frame.crops.len()];
         if !all_queued_tiles.is_empty() {
@@ -106,7 +129,7 @@ pub fn detection_worker(
 
             for (queued, detections) in all_queued_tiles.into_iter().zip(batch_results) {
                 for det in detections {
-                    if det.confidence().unwrap_or(0.0) < min_conf {
+                    if det.confidence().unwrap_or(0.0) < params.min_conf {
                         continue;
                     }
                     if det.name().unwrap_or("") != "person" {
@@ -136,7 +159,7 @@ pub fn detection_worker(
         for (i, crop) in frame.crops.iter().enumerate() {
             let nms_results = nms(
                 detections_by_crop[i].clone(),
-                slice_config.nms_iou_threshold,
+                params.slice_config.nms_iou_threshold,
             );
             let size = crop.image.size()?;
 
@@ -220,7 +243,7 @@ pub fn detection_worker(
 
                 let mut keep = Vec::new();
                 let mut suppressed = vec![false; ov_result.detections.len()];
-                let iou_threshold = slice_config.nms_iou_threshold;
+                let iou_threshold = params.slice_config.nms_iou_threshold;
 
                 for i in 0..sorted_indices.len() {
                     let idx_i = sorted_indices[i];
@@ -229,8 +252,7 @@ pub fn detection_worker(
                     }
                     keep.push(idx_i);
 
-                    for j in (i + 1)..sorted_indices.len() {
-                        let idx_j = sorted_indices[j];
+                    for &idx_j in sorted_indices.iter().skip(i + 1) {
                         if suppressed[idx_j] {
                             continue;
                         }

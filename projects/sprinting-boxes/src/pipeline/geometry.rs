@@ -128,3 +128,57 @@ pub fn is_point_in_polygon_robust(x: f32, y: f32, polygon: &[Point]) -> bool {
     let point = GeoPoint::new(x as f64, y as f64);
     poly.contains(&point)
 }
+
+/// Transforms polygon coordinates from global to crop-local space.
+pub fn transform_polygon(poly: &[Point], bbox: &BBox, crop_w: f32, crop_h: f32) -> Vec<Point> {
+    poly.iter()
+        .map(|p| {
+            let px = ((p.x - bbox.x) / bbox.w) * crop_w;
+            let py = ((p.y - bbox.y) / bbox.h) * crop_h;
+            Point { x: px, y: py }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::types::{BBox, Point};
+
+    #[test]
+    fn test_transform_polygon() {
+        let bbox = BBox {
+            x: 100.0,
+            y: 100.0,
+            w: 200.0,
+            h: 100.0,
+        };
+        let crop_w = 400.0;
+        let crop_h = 200.0;
+
+        // Point at top-left of bbox (global) -> top-left of crop (0,0)
+        let p1 = Point { x: 100.0, y: 100.0 };
+        // Point at center of bbox (global) -> center of crop
+        let p2 = Point { x: 200.0, y: 150.0 };
+        // Point at bottom-right of bbox (global) -> bottom-right of crop
+        let p3 = Point { x: 300.0, y: 200.0 };
+
+        let poly = vec![p1, p2, p3];
+        let transformed = transform_polygon(&poly, &bbox, crop_w, crop_h);
+
+        assert_eq!(transformed.len(), 3);
+
+        // p1 -> (0, 0)
+        assert!((transformed[0].x - 0.0).abs() < 1e-6);
+        assert!((transformed[0].y - 0.0).abs() < 1e-6);
+
+        // p2 -> (200, 100)  (bbox w=200, point is at +100 (50%). Crop w=400, expected +200.
+        //                    bbox h=100, point is at +50 (50%). Crop h=200, expected +100)
+        assert!((transformed[1].x - 200.0).abs() < 1e-6);
+        assert!((transformed[1].y - 100.0).abs() < 1e-6);
+
+        // p3 -> (400, 200)
+        assert!((transformed[2].x - 400.0).abs() < 1e-6);
+        assert!((transformed[2].y - 200.0).abs() < 1e-6);
+    }
+}

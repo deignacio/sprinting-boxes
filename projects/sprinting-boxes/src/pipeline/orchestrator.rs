@@ -5,11 +5,8 @@
 
 pub use crate::pipeline::types::ProcessingState;
 use crate::run_context::RunContext;
-use crate::video::ffmpeg_reader::FfmpegReader;
-use crate::video::opencv_reader::OpencvReader;
 use crate::video::VideoReader;
-use anyhow::{Context, Result};
-use crossbeam::channel;
+use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -101,6 +98,7 @@ pub fn start_processing(
     video_root: &Path,
     model_path: &str,
     backend: &str,
+    mode: crate::pipeline::types::PipelineMode,
 ) -> Result<Arc<ProcessingState>> {
     let video_path = run_context.resolve_video_path(video_root);
 
@@ -116,28 +114,51 @@ pub fn start_processing(
     let pipeline_configs: Vec<crate::pipeline::types::CropConfig> = (&crops).into();
     let configs = Arc::new(pipeline_configs);
 
-    if !video_path.exists() {
-        return Err(anyhow::anyhow!("Video file NOT FOUND at: {:?}", video_path));
-    }
-
-    // Create reader based on selected backend
-    let path_str = video_path.to_str().unwrap();
-    let sample_rate = run_context.sample_rate;
-    let reader: Box<dyn VideoReader> = match backend {
-        "ffmpeg" => Box::new(
-            FfmpegReader::new(path_str, sample_rate)
-                .with_context(|| format!("Failed to open video with ffmpeg at: '{}'", path_str))?,
-        ),
-        _ => Box::new(
-            OpencvReader::new(path_str, sample_rate)
-                .with_context(|| format!("Failed to open video at: '{}'", path_str))?,
-        ),
+    // Determine the source path for the reader based on mode
+    let source_path_str = match mode {
+        crate::pipeline::types::PipelineMode::Pull => {
+            if !video_path.exists() {
+                return Err(anyhow::anyhow!("Video file NOT FOUND at: {:?}", video_path));
+            }
+            video_path.to_str().unwrap().to_string()
+        }
+        crate::pipeline::types::PipelineMode::Field => {
+            let frames_dir = run_context.output_dir.join("crops");
+            if !frames_dir.exists() {
+                return Err(anyhow::anyhow!(
+                    "Crops directory NOT FOUND at: {:?}",
+                    frames_dir
+                ));
+            }
+            frames_dir.to_str().unwrap().to_string()
+        }
     };
 
-    let total_units = reader.frame_count()?;
+    let sample_rate = run_context.sample_rate;
+
+    // Use a dummy reader just to get the total units, the actual workers create their own readers.
+    let total_units = match mode {
+        crate::pipeline::types::PipelineMode::Pull => {
+            let dummy_reader: Box<dyn crate::video::VideoReader> = match backend {
+                "ffmpeg" => Box::new(crate::video::ffmpeg_reader::FfmpegReader::new(
+                    &source_path_str,
+                    sample_rate,
+                )?),
+                _ => Box::new(crate::video::opencv_reader::OpencvReader::new(
+                    &source_path_str,
+                    sample_rate,
+                )?),
+            };
+            dummy_reader.frame_count()?
+        }
+        crate::pipeline::types::PipelineMode::Field => {
+            let dummy_reader =
+                crate::video::image_reader::ImageDiskReader::new(&source_path_str, sample_rate)?;
+            dummy_reader.frame_count()?
+        }
+    };
 
     // Create range pool for parallel readers (chunks of 200 sampled units)
-    // Larger chunks reduce lock contention and seeking overhead.
     let chunk_size = 200;
     let mut ranges = std::collections::VecDeque::new();
     for i in (0..total_units).step_by(chunk_size) {
@@ -156,28 +177,43 @@ pub fn start_processing(
     let min_conf = 0.5;
     let slice_config = crate::pipeline::slicing::SliceConfig::new(640, 0.2);
 
-    // Create channels
-    // Tight bound of 2 frames per worker to prevent excessive memory usage with 8K frames
+    // Channels
     let reader_workers_initial = 1;
     let (tx_v, rx_v) =
-        channel::bounded::<crate::pipeline::types::RawFrame>(reader_workers_initial * 2);
-    let (tx_c, rx_c) = channel::unbounded::<crate::pipeline::types::PreprocessedFrame>(); // Unbounded for distribution
-    let (tx_d, rx_d) = channel::unbounded::<crate::pipeline::types::DetectedFrame>(); // Unbounded results
+        crossbeam::channel::bounded::<crate::pipeline::types::RawFrame>(reader_workers_initial * 2);
+    let (tx_c, rx_c) = crossbeam::channel::bounded::<crate::pipeline::types::PreprocessedFrame>(32);
+    let (tx_d, rx_d) = crossbeam::channel::bounded::<crate::pipeline::types::DetectedFrame>(8);
 
     // Target worker counts
     let target_reader = Arc::new(std::sync::atomic::AtomicUsize::new(reader_workers_initial));
-    let target_crop = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let target_crop = Arc::new(std::sync::atomic::AtomicUsize::new(
+        if mode == crate::pipeline::types::PipelineMode::Pull {
+            1
+        } else {
+            0
+        },
+    ));
     let target_detect = Arc::new(std::sync::atomic::AtomicUsize::new(1));
 
-    // Create control structures
+    // Control structures
     let reader_control = Arc::new(crate::pipeline::types::ReaderControl {
         range_pool,
-        target_count: target_reader,
+        target_count: target_reader.clone(),
         tx_v: Arc::new(RwLock::new(Some(tx_v))),
-        video_path: path_str.to_string(),
+        video_path: source_path_str.clone(),
         backend: backend.to_string(),
         sample_rate,
     });
+
+    // In Pull mode, we only detect EZ crops. In Field mode, we detect the overview (specifically the 'field' region).
+    let regions_to_detect = match mode {
+        crate::pipeline::types::PipelineMode::Pull => {
+            Some(vec!["left".to_string(), "right".to_string()])
+        }
+        crate::pipeline::types::PipelineMode::Field => {
+            Some(vec!["overview".to_string(), "field".to_string()])
+        }
+    };
 
     let detect_control = Arc::new(DetectionControl {
         source_rx: rx_c.clone(),
@@ -186,14 +222,14 @@ pub fn start_processing(
         min_conf,
         slice_conf: slice_config,
         target_count: target_detect.clone(),
-        regions_to_detect: None, // Default to all regions (matching existing behavior)
+        regions_to_detect,
     });
 
     let crop_control = Arc::new(CropControl {
-        source_rx: rx_v, // crop worker now takes from rx_v (reader output)
-        result_tx: Arc::new(RwLock::new(Some(tx_c))), // outputs to rx_c (detection input)
+        source_rx: rx_v.clone(),
+        result_tx: Arc::new(RwLock::new(Some(tx_c.clone()))),
         configs: configs.clone(),
-        enable_clahe: true, // Hardcoded for now as per previous logic logic but explicit
+        enable_clahe: true,
         target_count: target_crop.clone(),
     });
 
@@ -206,28 +242,60 @@ pub fn start_processing(
 
     register_pipeline(&run_context.run_id, manager.clone());
 
-    // Spawn 1: Readers
-    spawn_reader_worker(state.clone(), reader_control.clone());
+    // Spawn 1 & 2 conditionally
+    match mode {
+        crate::pipeline::types::PipelineMode::Pull => {
+            // Standard video reading and cropping
+            spawn_reader_worker(state.clone(), reader_control.clone());
+            spawn_crop_worker(state.clone(), crop_control.clone());
+        }
+        crate::pipeline::types::PipelineMode::Field => {
+            // Image reading directly into preprocessed frames (skips crop worker)
+            let state_img = state.clone();
+            let control_img = reader_control.clone();
+            let configs_img = configs.clone();
+            state.active_reader_workers.fetch_add(1, Ordering::Relaxed);
 
-    // Spawn 2: Crop (Initial Worker)
-    spawn_crop_worker(state.clone(), crop_control.clone());
+            std::thread::spawn(move || {
+                tracing::info!("Spawning image reader worker for Field mode");
+                let result = crate::pipeline::image_worker::image_worker(
+                    tx_c.clone(),
+                    state_img.clone(),
+                    control_img,
+                    configs_img,
+                );
 
-    // Spawn 3: Detection (Initial Worker)
+                state_img
+                    .active_reader_workers
+                    .fetch_sub(1, Ordering::Relaxed);
+                if let Err(e) = result {
+                    tracing::error!("Image worker failed: {}", e);
+                } else {
+                    tracing::info!("Image worker finished gracefully");
+                }
+            });
+        }
+    }
+
+    // Spawn 3: Detection
     spawn_detection_worker(state.clone(), detect_control.clone());
 
     // Spawn 4: Feature extraction
-    let (tx_f, rx_f) = crossbeam::channel::unbounded();
+    let (tx_f, rx_f) = crossbeam::channel::bounded(8);
     let state_feat = state.clone();
     let output_dir_feat = run_context.output_dir.clone();
     let team_size = run_context.team_size as usize;
+    let mode_feat = mode;
     thread::spawn(move || {
         let config = crate::pipeline::feature::FeatureConfig {
-            team_size: team_size,
+            team_size,
             lookback_frames: 10,
             lookahead_frames: 15,
             output_dir: output_dir_feat,
         };
-        if let Err(e) = crate::pipeline::feature::feature_worker(rx_d, tx_f, config, state_feat) {
+        if let Err(e) =
+            crate::pipeline::feature::feature_worker(rx_d, tx_f, config, state_feat, mode_feat)
+        {
             tracing::error!("Feature worker failed: {}", e);
         }
     });
@@ -238,11 +306,16 @@ pub fn start_processing(
     let save_visuals = std::env::var("SAVE_VISUAL_CROPS")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(true);
+    let mode_f = mode;
 
     thread::spawn(move || {
-        if let Err(e) =
-            crate::pipeline::finalize::finalize_worker(rx_f, output_dir, save_visuals, state_f)
-        {
+        if let Err(e) = crate::pipeline::finalize::finalize_worker(
+            rx_f,
+            output_dir,
+            save_visuals,
+            state_f,
+            mode_f,
+        ) {
             tracing::error!("Finalize worker failed: {}", e);
         }
     });
@@ -340,18 +413,20 @@ fn spawn_supervisor(manager: Arc<PipelineManager>) {
 
 fn spawn_detection_worker(state: Arc<ProcessingState>, control: Arc<DetectionControl>) {
     state.active_detect_workers.fetch_add(1, Ordering::Relaxed);
-    let tx_d = control.get_tx().expect("Detection transmitter missing");
-    std::thread::spawn(move || {
-        tracing::info!("Spawning new detection worker");
+    thread::spawn(move || {
+        let params = crate::pipeline::detection_worker::DetectionParams {
+            model_path: control.model_path.clone(),
+            min_conf: control.min_conf,
+            slice_config: control.slice_conf.clone(),
+            regions_to_detect: control.regions_to_detect.clone(),
+        };
+
         let result = crate::pipeline::detection_worker::detection_worker(
             control.source_rx.clone(),
-            tx_d,
-            &control.model_path,
-            control.min_conf,
-            control.slice_conf.clone(),
+            control.get_tx().unwrap(),
+            params,
             state.clone(),
             control.target_count.clone(),
-            control.regions_to_detect.clone(),
         );
 
         state.active_detect_workers.fetch_sub(1, Ordering::Relaxed);
@@ -464,8 +539,8 @@ mod tests {
         let state = Arc::new(ProcessingState::new("test_run".to_string(), 100));
 
         // Setup mock config
-        let (tx_c, rx_c) = channel::unbounded(); // Detect input
-        let (tx_d, _rx_d) = channel::unbounded(); // Detect output
+        let (tx_c, rx_c) = channel::bounded(8); // Detect input
+        let (tx_d, _rx_d) = channel::bounded(8); // Detect output
         let (tx_v, rx_v) = channel::bounded(8); // Crop input (reader output)
 
         // Target counts
