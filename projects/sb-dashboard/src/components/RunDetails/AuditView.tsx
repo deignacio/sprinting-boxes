@@ -76,26 +76,34 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
     }
   };
 
-  const handleAuditChange = (idx: number, field: string, value: string) => {
+  const handleAuditChange = async (idx: number, field: string, value: string) => {
     const updated = cliffs.map((c, i) => {
       if (i === idx) return { ...c, [field]: value };
       return c;
     });
 
-    const processed = recalculateAudit(updated, settings);
-    syncAuditData(processed);
+    try {
+      const processed = await recalculateAudit(updated, settings, runId);
+      await syncAuditData(processed);
+    } catch (err) {
+      console.error("Failed to recalculate audit", err);
+    }
   };
 
-  const handleStatusChange = (idx: number, newStatus: CliffData["status"]) => {
+  const handleStatusChange = async (idx: number, newStatus: CliffData["status"]) => {
     const updated = cliffs.map((c, i) => {
       if (i === idx) return { ...c, status: newStatus };
       return c;
     });
-    const processed = recalculateAudit(updated, settings);
-    syncAuditData(processed);
+    try {
+      const processed = await recalculateAudit(updated, settings, runId);
+      await syncAuditData(processed);
+    } catch (err) {
+      console.error("Failed to recalculate audit", err);
+    }
   };
 
-  const handleInsertHalftime = (idx: number) => {
+  const handleInsertHalftime = async (idx: number) => {
     const nextPoint = cliffs[idx];
     if (!nextPoint) return;
 
@@ -112,18 +120,26 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
       is_break: false,
     };
 
-    const updated = [...cliffs, newHalftime];
-    const processed = recalculateAudit(updated, settings);
-    syncAuditData(processed);
+    try {
+      const updated = [...cliffs, newHalftime];
+      const processed = await recalculateAudit(updated, settings, runId);
+      await syncAuditData(processed);
+    } catch (err) {
+      console.error("Failed to insert halftime", err);
+    }
   };
 
-  const handleHalftimeWinnerChange = (idx: number, winner: "light" | "dark" | null) => {
+  const handleHalftimeWinnerChange = async (idx: number, winner: "light" | "dark" | null) => {
     const updated = cliffs.map((c, i) => {
       if (i === idx) return { ...c, halftime_winner: winner };
       return c;
     });
-    const processed = recalculateAudit(updated, settings);
-    syncAuditData(processed);
+    try {
+      const processed = await recalculateAudit(updated, settings, runId);
+      await syncAuditData(processed);
+    } catch (err) {
+      console.error("Failed to recalculate audit", err);
+    }
   };
 
   if (cliffs.length === 0) {

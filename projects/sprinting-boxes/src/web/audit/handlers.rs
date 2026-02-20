@@ -1,3 +1,11 @@
+// HTTP handlers for the audit system
+//
+// This module contains all the async HTTP handlers for:
+// - Getting/saving audit state
+// - Updating settings and cliff fields
+// - Export handlers (YouTube, Insta360, VLC)
+// - Recalculation endpoint (for frontend)
+
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
@@ -11,55 +19,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
+use super::models::{AuditSettings, AuditState, CliffData};
+use super::utils::{format_timestamp, get_sample_rate, parse_duration_to_secs, recalculate_audit};
 use crate::cli::Args;
 use crate::run_context::list_runs;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CliffData {
-    pub frame_index: usize,
-    pub timestamp: String,
-    pub left_emptied_first: bool,
-    pub right_emptied_first: bool,
-    pub maybe_false_positive: bool,
-    pub status: String, // "Unconfirmed", "Confirmed", "FalsePositive", "Halftime"
-    pub halftime_winner: Option<String>, // "light" or "dark"
-    pub manual_side_override: Option<String>, // "left" or "right"
-    pub manual_color_override: Option<String>, // "light" or "dark" (explicit override)
-    pub left_team_color: Option<String>, // "light" or "dark" (inferred or overridden)
-    pub right_team_color: Option<String>,
-    pub score_light: i32,
-    pub score_dark: i32,
-    pub is_break: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditSettings {
-    pub light_team_name: String,
-    pub dark_team_name: String,
-    pub initial_score_light: i32,
-    pub initial_score_dark: i32,
-    pub video_start_time: String,
-}
-
-impl Default for AuditSettings {
-    fn default() -> Self {
-        Self {
-            light_team_name: "Team A".to_string(),
-            dark_team_name: "Team B".to_string(),
-            initial_score_light: 0,
-            initial_score_dark: 0,
-            video_start_time: "00:00:00".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AuditState {
-    pub cliffs: Vec<CliffData>,
-    pub settings: AuditSettings,
-}
-
-/// Helper to load audit state, initializing from points.csv if valid
+/// Load audit state from CSV and optional JSON file
 fn load_or_init_audit_state(
     run_context: &crate::run_context::RunContext,
 ) -> Result<AuditState, StatusCode> {
@@ -74,21 +39,17 @@ fn load_or_init_audit_state(
         }
     }
 
-    let mut cliffs = Vec::new();
     let points_content =
         fs::read_to_string(&points_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Sample rate from run context (fallback to 30.0 if invalid/zero, though unlikely)
-    let sample_rate = if run_context.sample_rate > 0.0 {
-        run_context.sample_rate
-    } else {
-        30.0
-    };
+    let sample_rate = get_sample_rate(run_context.sample_rate);
 
+    // Parse CSV into initial cliffs
+    let mut cliffs = Vec::new();
     for (idx, line) in points_content.lines().enumerate() {
         if idx == 0 {
-            continue;
-        } // Skip header
+            continue; // Skip header
+        }
 
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() < 4 {
@@ -145,7 +106,7 @@ fn load_or_init_audit_state(
         let mut merged_cliffs: Vec<CliffData> = cliff_map.into_values().collect();
         merged_cliffs.sort_by_key(|c| c.frame_index);
 
-        // Always recalculate timestamps and scores on load to ensure sync with current settings
+        // Always recalculate timestamps and scores on load
         let final_cliffs = recalculate_audit(&merged_cliffs, &audit_state.settings, sample_rate);
 
         Ok(AuditState {
@@ -165,6 +126,10 @@ fn load_or_init_audit_state(
     }
 }
 
+// ============================================================================
+// Audit Handlers
+// ============================================================================
+
 /// Load cliffs from points.csv and audit.json (if exists)
 pub async fn get_cliffs_handler(
     State(args): State<Arc<Args>>,
@@ -178,15 +143,8 @@ pub async fn get_cliffs_handler(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let audit_state = load_or_init_audit_state(&run_context)?;
+    let sample_rate = get_sample_rate(run_context.sample_rate);
 
-    // Sample rate (default 30.0)
-    let sample_rate = if run_context.sample_rate > 0.0 {
-        run_context.sample_rate
-    } else {
-        30.0
-    };
-
-    // Recalculate scores and breaks
     let enriched_cliffs =
         recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
 
@@ -211,12 +169,7 @@ pub async fn save_audit_handler(
     let output_dir = &run_context.output_dir;
     let audit_path = output_dir.join("audit.json");
 
-    // Sample rate (default 30.0)
-    let sample_rate = if run_context.sample_rate > 0.0 {
-        run_context.sample_rate
-    } else {
-        30.0
-    };
+    let sample_rate = get_sample_rate(run_context.sample_rate);
 
     let enriched_cliffs =
         recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
@@ -248,13 +201,7 @@ pub async fn update_audit_settings_handler(
     let audit_path = output_dir.join("audit.json");
 
     let mut audit_state = load_or_init_audit_state(&run_context)?;
-
-    // Sample rate (default 30.0)
-    let sample_rate = if run_context.sample_rate > 0.0 {
-        run_context.sample_rate
-    } else {
-        30.0
-    };
+    let sample_rate = get_sample_rate(run_context.sample_rate);
 
     audit_state.settings = settings;
     let enriched_cliffs =
@@ -323,10 +270,9 @@ pub async fn update_cliff_field_handler(
                     "light".to_string()
                 };
 
-                // Set explicit override for this cliff
                 cliff.manual_color_override = Some(new_left);
 
-                // Clear overrides for all subsequent cliffs to force re-inference
+                // Clear overrides for all subsequent cliffs
                 let current_idx = cliff.frame_index;
                 for c in audit_state.cliffs.iter_mut() {
                     if c.frame_index > current_idx {
@@ -340,12 +286,7 @@ pub async fn update_cliff_field_handler(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    // Sample rate (default 30.0)
-    let sample_rate = if run_context.sample_rate > 0.0 {
-        run_context.sample_rate
-    } else {
-        30.0
-    };
+    let sample_rate = get_sample_rate(run_context.sample_rate);
 
     let enriched_cliffs =
         recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
@@ -358,212 +299,26 @@ pub async fn update_cliff_field_handler(
     Ok(StatusCode::OK)
 }
 
-fn format_timestamp(frame_index: usize, sample_rate: f64, offset_secs: f64) -> String {
-    let total_secs = (frame_index as f64 / sample_rate) + offset_secs;
-    let hours = (total_secs / 3600.0) as usize;
-    let minutes = ((total_secs % 3600.0) / 60.0) as usize;
-    let seconds = (total_secs % 60.0) as usize;
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+/// NEW: Recalculate audit without saving (stateless)
+/// This allows the frontend to get recalculated cliffs without making changes
+pub async fn recalculate_audit_handler(
+    Json(audit_state): Json<AuditState>,
+) -> Result<Json<AuditState>, StatusCode> {
+    // Use default sample rate if not provided in settings
+    let sample_rate = 30.0;
+
+    let enriched_cliffs =
+        recalculate_audit(&audit_state.cliffs, &audit_state.settings, sample_rate);
+
+    Ok(Json(AuditState {
+        cliffs: enriched_cliffs,
+        settings: audit_state.settings,
+    }))
 }
 
-fn parse_duration_to_secs(duration: &str) -> f64 {
-    let parts: Vec<&str> = duration.split(':').collect();
-    if parts.len() != 3 {
-        return 0.0;
-    }
-    let h: f64 = parts[0].parse().unwrap_or(0.0);
-    let m: f64 = parts[1].parse().unwrap_or(0.0);
-    let s: f64 = parts[2].parse().unwrap_or(0.0);
-    (h * 3600.0) + (m * 60.0) + s
-}
-
-fn recalculate_audit(
-    cliffs: &[CliffData],
-    settings: &AuditSettings,
-    sample_rate: f64,
-) -> Vec<CliffData> {
-    if cliffs.is_empty() {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    let mut score_light = settings.initial_score_light;
-    let mut score_dark = settings.initial_score_dark;
-    let mut last_valid_left_color: Option<String> = None;
-    let mut valid_point_count = 0;
-
-    let mut sorted_cliffs = cliffs.to_vec();
-    sorted_cliffs.sort_by_key(|c| c.frame_index);
-
-    // Pass 1: Core scoring and team assignment
-    for cliff in sorted_cliffs.iter() {
-        let is_fp = cliff.status == "FalsePositive";
-
-        let total_offset = parse_duration_to_secs(&settings.video_start_time);
-
-        if cliff.status == "Halftime" {
-            if cliff.halftime_winner.as_deref() == Some("light") {
-                score_light += 1;
-            } else if cliff.halftime_winner.as_deref() == Some("dark") {
-                score_dark += 1;
-            }
-
-            valid_point_count = 0; // Reset for second half
-
-            result.push(CliffData {
-                timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
-                left_team_color: None,
-                right_team_color: None,
-                score_light,
-                score_dark,
-                is_break: false,
-                ..cliff.clone()
-            });
-            continue;
-        }
-
-        if is_fp {
-            result.push(CliffData {
-                timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
-                left_team_color: None,
-                right_team_color: None,
-                score_light,
-                score_dark,
-                is_break: false,
-                ..cliff.clone()
-            });
-            continue;
-        }
-
-        // Determine team colors
-        let (left, right) = if let Some(ref override_color) = cliff.manual_color_override {
-            // Explicit override takes precedence
-            let l = override_color.clone();
-            let r = if l == "light" {
-                "dark".to_string()
-            } else {
-                "light".to_string()
-            };
-            (l, r)
-        } else if let Some(ref last_color) = last_valid_left_color {
-            // Infer from previous (alternating)
-            let new_left = if last_color == "light" {
-                "dark".to_string()
-            } else {
-                "light".to_string()
-            };
-            let new_right = if new_left == "light" {
-                "dark".to_string()
-            } else {
-                "light".to_string()
-            };
-            (new_left, new_right)
-        } else {
-            ("light".to_string(), "dark".to_string())
-        };
-
-        last_valid_left_color = Some(left.clone());
-
-        // Score update (if not first point)
-        if valid_point_count > 0 {
-            let pull_side = cliff
-                .manual_side_override
-                .as_deref()
-                .or(if cliff.left_emptied_first {
-                    Some("left")
-                } else if cliff.right_emptied_first {
-                    Some("right")
-                } else {
-                    None
-                });
-
-            if let Some(side) = pull_side {
-                let pulling_team = if side == "left" { &left } else { &right };
-                if pulling_team == "light" {
-                    score_light += 1;
-                } else if pulling_team == "dark" {
-                    score_dark += 1;
-                }
-            }
-        }
-
-        valid_point_count += 1;
-
-        result.push(CliffData {
-            timestamp: format_timestamp(cliff.frame_index, sample_rate, total_offset),
-            left_team_color: Some(left),
-            right_team_color: Some(right),
-            score_light,
-            score_dark,
-            is_break: false,
-            ..cliff.clone()
-        });
-    }
-
-    // Pass 2: Break detection
-    let valid_points: Vec<CliffData> = result
-        .iter()
-        .filter(|c| c.status != "FalsePositive")
-        .cloned()
-        .collect();
-    let mut break_indices = Vec::new();
-
-    for j in 0..valid_points.len().saturating_sub(1) {
-        let cur = &valid_points[j];
-        let next = &valid_points[j + 1];
-
-        let cur_pull_side = cur
-            .manual_side_override
-            .as_deref()
-            .or(if cur.left_emptied_first {
-                Some("left")
-            } else if cur.right_emptied_first {
-                Some("right")
-            } else {
-                None
-            });
-        let cur_pull_team = cur_pull_side.and_then(|side| {
-            if side == "left" {
-                cur.left_team_color.as_ref()
-            } else {
-                cur.right_team_color.as_ref()
-            }
-        });
-
-        let next_pull_side = next
-            .manual_side_override
-            .as_deref()
-            .or(if next.left_emptied_first {
-                Some("left")
-            } else if next.right_emptied_first {
-                Some("right")
-            } else {
-                None
-            });
-        let next_pull_team = next_pull_side.and_then(|side| {
-            if side == "left" {
-                next.left_team_color.as_ref()
-            } else {
-                next.right_team_color.as_ref()
-            }
-        });
-
-        if let (Some(cur_team), Some(next_team)) = (cur_pull_team, next_pull_team) {
-            if cur_team == next_team {
-                break_indices.push(cur.frame_index);
-            }
-        }
-    }
-
-    // Apply breaks
-    for frame_idx in break_indices {
-        if let Some(cliff) = result.iter_mut().find(|c| c.frame_index == frame_idx) {
-            cliff.is_break = true;
-        }
-    }
-
-    result
-}
+// ============================================================================
+// Export Handlers - Feature Data
+// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureData {
@@ -573,7 +328,6 @@ pub struct FeatureData {
     pub field_count: f32,
     pub pre_point_score: f32,
     pub crop_path: Option<String>,
-    // New features
     pub com_x: Option<f32>,
     pub com_y: Option<f32>,
     pub std_dev: Option<f32>,
@@ -597,10 +351,8 @@ pub async fn serve_run_crop_handler(
     let crops_dir = run_context.output_dir.join("crops");
     let mut file_path = crops_dir.join(&filename);
 
-    if !file_path.exists() {
-        // Fallback: If overview is requested but missing, try to find ANY crop for this frame
-        // to support old runs.
-        if filename.contains("_overview.jpg") {
+    if !file_path.exists()
+        && filename.contains("_overview.jpg") {
             let frame_prefix = filename.split("_overview.jpg").next().unwrap_or("");
             if let Ok(entries) = fs::read_dir(&crops_dir) {
                 for entry in entries.flatten() {
@@ -612,7 +364,6 @@ pub async fn serve_run_crop_handler(
                 }
             }
         }
-    }
 
     if !file_path.exists() {
         return Err(StatusCode::NOT_FOUND);
@@ -624,16 +375,13 @@ pub async fn serve_run_crop_handler(
         .unwrap_or(&filename)
         .to_string();
 
-    // Check if annotation is requested
     let annotate = params.get("annotate").map(|v| v == "true").unwrap_or(false);
 
     if annotate {
-        // Load raw crop image
         let img =
             opencv::imgcodecs::imread(file_path.to_str().unwrap(), opencv::imgcodecs::IMREAD_COLOR)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        // Parse frame index and suffix from final filename
         let frame_info = final_filename
             .strip_prefix("frame_")
             .and_then(|s| s.strip_suffix(".jpg"))
@@ -647,7 +395,6 @@ pub async fn serve_run_crop_handler(
         let frame_index: usize = parts[0].parse().map_err(|_| StatusCode::BAD_REQUEST)?;
         let suffix = parts[1];
 
-        // Load detections.json to get metadata for this frame. Fallback to pull_detections.json if missing.
         let mut detections_path = run_context.output_dir.join("detections.json");
         if !detections_path.exists() {
             let pull_path = run_context.output_dir.join("pull_detections.json");
@@ -668,7 +415,6 @@ pub async fn serve_run_crop_handler(
             serde_json::from_str(&detections_json)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        // Find the matching frame and crop
         let frame = all_frames
             .iter()
             .find(|f| f.id == frame_index)
@@ -680,12 +426,10 @@ pub async fn serve_run_crop_handler(
             .find(|r| r.suffix == suffix)
             .ok_or(StatusCode::NOT_FOUND)?;
 
-        // Draw annotations
         let annotated_img =
             crate::pipeline::finalize::draw_annotations(&img, crop_result, Some(frame))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        // Encode to JPEG
         let mut buf = opencv::core::Vector::<u8>::new();
         opencv::imgcodecs::imencode(
             ".jpg",
@@ -703,7 +447,6 @@ pub async fn serve_run_crop_handler(
         );
         Ok(response)
     } else {
-        // Serve raw crop
         match fs::read(file_path) {
             Ok(data) => {
                 let mut response = axum::response::IntoResponse::into_response(data);
@@ -747,7 +490,7 @@ pub async fn get_features_handler(
     for (idx, line) in content.lines().enumerate() {
         if idx == 0 {
             continue;
-        } // Skip header
+        }
 
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() < 5 {
@@ -759,7 +502,6 @@ pub async fn get_features_handler(
         let right_count: f32 = parts[2].parse().unwrap_or(0.0);
         let field_count: f32 = parts[3].parse().unwrap_or(0.0);
         let pre_point_score: f32 = parts[4].parse().unwrap_or(0.0);
-        // Parse new features if available (backwards compat)
         let com_x = parts
             .get(6)
             .and_then(|s| s.parse::<f32>().ok())

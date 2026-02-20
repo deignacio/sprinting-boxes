@@ -1,4 +1,10 @@
-// Audit utility functions for score calculation and break detection
+// Audit utility functions for the sprinting-boxes dashboard
+//
+// IMPORTANT: The core scoring logic now lives in the backend (Rust).
+// This module provides:
+// - TypeScript interfaces matching the backend models
+// - API functions to interact with the backend
+// - Any frontend-only utility functions
 
 export interface CliffData {
   frame_index: number;
@@ -25,122 +31,100 @@ export interface AuditSettings {
   video_start_time: string;
 }
 
-export function recalculateAudit(
+export interface AuditState {
+  cliffs: CliffData[];
+  settings: AuditSettings;
+}
+
+/**
+ * Recalculate audit by calling the backend API
+ * 
+ * This replaces the previous local recalculation logic.
+ * The backend handles all scoring, team assignment, and break detection.
+ */
+export async function recalculateAudit(
   cliffs: CliffData[],
   settings: AuditSettings,
-): CliffData[] {
-  if (!cliffs || cliffs.length === 0) return [];
-
-  const initialScoreLight = parseInt(String(settings.initial_score_light)) || 0;
-  const initialScoreDark = parseInt(String(settings.initial_score_dark)) || 0;
-
-  let scoreLight = initialScoreLight;
-  let scoreDark = initialScoreDark;
-
-  const sorted = [...cliffs].sort((a, b) => a.frame_index - b.frame_index);
-  const result: CliffData[] = [];
-  let lastValidLeftColor: string | null = null;
-  let validPointCount = 0;
-
-  // Pass 1: Core Scoring and Team Assignment
-  for (let i = 0; i < sorted.length; i++) {
-    const cliff = sorted[i];
-    const isFP = cliff.status === "FalsePositive";
-
-    if (cliff.status === "Halftime") {
-      if (cliff.halftime_winner === "light") scoreLight++;
-      else if (cliff.halftime_winner === "dark") scoreDark++;
-
-      validPointCount = 0; // Reset for second half
-
-      result.push({
-        ...cliff,
-        left_team_color: undefined,
-        right_team_color: undefined,
-        score_light: scoreLight,
-        score_dark: scoreDark,
-        is_break: false,
-      });
-      continue;
-    }
-
-    if (isFP) {
-      result.push({
-        ...cliff,
-        left_team_color: undefined,
-        right_team_color: undefined,
-        score_light: scoreLight,
-        score_dark: scoreDark,
-        is_break: false,
-      });
-      continue;
-    }
-
-    // Determine team colors for this point
-    let left = cliff.left_team_color;
-    let right = cliff.right_team_color;
-
-    if (left) {
-      // Manual override exists for this point or it's been set already
-      right = left === "light" ? "dark" : "light";
-    } else if (lastValidLeftColor === null) {
-      // First valid point: default to light on left
-      left = "light";
-      right = "dark";
-    } else {
-      // Subsequent points: toggle from last valid point
-      left = lastValidLeftColor === "light" ? "dark" : "light";
-      right = left === "light" ? "dark" : "light";
-    }
-
-    lastValidLeftColor = left;
-
-    // Score update: if not first point (non-FP)
-    if (validPointCount > 0) {
-      let pullSide = "unknown";
-      if (cliff.manual_side_override) pullSide = cliff.manual_side_override;
-      else if (cliff.left_emptied_first) pullSide = "left";
-      else if (cliff.right_emptied_first) pullSide = "right";
-
-      if (pullSide !== "unknown") {
-        const pullingTeam = pullSide === "left" ? left : right;
-        if (pullingTeam === "light") scoreLight++;
-        else if (pullingTeam === "dark") scoreDark++;
-      }
-    }
-
-    validPointCount++;
-
-    result.push({
-      ...cliff,
-      left_team_color: left,
-      right_team_color: right,
-      score_light: scoreLight,
-      score_dark: scoreDark,
-      is_break: false,
-    });
+  runId: string
+): Promise<CliffData[]> {
+  const response = await fetch(`/api/runs/${runId}/audit/recalculate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cliffs, settings }),
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to recalculate audit');
   }
+  
+  const data: AuditState = await response.json();
+  return data.cliffs;
+}
 
-  // Pass 2: Break Detection
-  const validPoints = result.filter((c) => c.status !== "FalsePositive");
-  for (let j = 0; j < validPoints.length - 1; j++) {
-    const cur = validPoints[j];
-    const next = validPoints[j + 1];
-
-    const curPullSide =
-      cur.manual_side_override || (cur.left_emptied_first ? "left" : "right");
-    const curPullTeam =
-      curPullSide === "left" ? cur.left_team_color : cur.right_team_color;
-
-    const nextPullSide =
-      next.manual_side_override || (next.left_emptied_first ? "left" : "right");
-    const nextPullTeam =
-      nextPullSide === "left" ? next.left_team_color : next.right_team_color;
-
-    if (curPullTeam && nextPullTeam && curPullTeam === nextPullTeam) {
-      cur.is_break = true;
-    }
+/**
+ * Load audit data from the backend
+ */
+export async function loadAuditData(runId: string): Promise<AuditState> {
+  const response = await fetch(`/api/runs/${runId}/audit/cliffs`);
+  
+  if (!response.ok) {
+    throw new Error('Failed to load audit data');
   }
+  
+  return response.json();
+}
 
-  return result;
+/**
+ * Save audit data to the backend
+ */
+export async function saveAuditData(
+  runId: string,
+  cliffs: CliffData[],
+  settings: AuditSettings
+): Promise<void> {
+  const response = await fetch(`/api/runs/${runId}/audit/cliffs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cliffs, settings }),
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to save audit data');
+  }
+}
+
+/**
+ * Update audit settings on the backend
+ */
+export async function updateAuditSettings(
+  runId: string,
+  settings: AuditSettings
+): Promise<void> {
+  const response = await fetch(`/api/runs/${runId}/audit/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to update settings');
+  }
+}
+
+/**
+ * Update a single cliff field
+ */
+export async function updateCliffField(
+  runId: string,
+  frameIndex: number,
+  field: string
+): Promise<void> {
+  const response = await fetch(
+    `/api/runs/${runId}/audit/cliffs/${frameIndex}/${field}`,
+    { method: 'POST' }
+  );
+  
+  if (!response.ok) {
+    throw new Error('Failed to update cliff field');
+  }
 }
