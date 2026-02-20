@@ -135,21 +135,25 @@ pub fn start_processing(
     };
 
     let sample_rate = run_context.sample_rate;
-
     // Use a dummy reader just to get the total units, the actual workers create their own readers.
     let total_units = match mode {
         crate::pipeline::types::PipelineMode::Pull => {
-            let dummy_reader: Box<dyn crate::video::VideoReader> = match backend {
-                "ffmpeg" => Box::new(crate::video::ffmpeg_reader::FfmpegReader::new(
-                    &source_path_str,
-                    sample_rate,
-                )?),
-                _ => Box::new(crate::video::opencv_reader::OpencvReader::new(
-                    &source_path_str,
-                    sample_rate,
-                )?),
-            };
-            dummy_reader.frame_count()?
+            if run_context.duration_secs > 0.0 {
+                (run_context.duration_secs * sample_rate).round() as usize
+            } else {
+                // Fallback for legacy runs: probe video
+                let dummy_reader: Box<dyn crate::video::VideoReader> = match backend {
+                    "ffmpeg" => Box::new(crate::video::ffmpeg_reader::FfmpegReader::new(
+                        &source_path_str,
+                        sample_rate,
+                    )?),
+                    _ => Box::new(crate::video::opencv_reader::OpencvReader::new(
+                        &source_path_str,
+                        sample_rate,
+                    )?),
+                };
+                dummy_reader.frame_count()?
+            }
         }
         crate::pipeline::types::PipelineMode::Field => {
             let dummy_reader =

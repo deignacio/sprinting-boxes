@@ -23,6 +23,8 @@ pub struct RunContext {
     #[serde(default)]
     pub fps: f64,
     #[serde(default)]
+    pub duration_secs: f64,
+    #[serde(default)]
     pub youtube_link: Option<String>,
     #[serde(default)]
     pub fuegostats_link: Option<String>,
@@ -49,6 +51,7 @@ impl RunContext {
             sample_rate: 1.0,
             total_frames: 0,
             fps: 30.0,
+            duration_secs: 0.0,
             youtube_link: None,
             fuegostats_link: None,
             output_dir,
@@ -312,6 +315,7 @@ pub fn create_run(output_root: &Path, video_root: &Path, video_name: &str) -> Re
     // Extract metadata from video
     let mut total_frames = 0;
     let mut fps = 0.0;
+    let mut duration_secs = 0.0;
 
     // We use a temporary capture to extract metadata
     let capture = opencv::videoio::VideoCapture::from_file(
@@ -321,11 +325,17 @@ pub fn create_run(output_root: &Path, video_root: &Path, video_name: &str) -> Re
     if capture.is_opened()? {
         total_frames = capture.get(opencv::videoio::CAP_PROP_FRAME_COUNT)? as usize;
         fps = capture.get(opencv::videoio::CAP_PROP_FPS)?;
+        // Also get duration from some source if possible, but CAP_PROP_FRAME_COUNT / FPS is a start.
+        // Actually CAP_AVFOUNDATION might not give direct duration property.
+        if fps > 0.0 {
+            duration_secs = total_frames as f64 / fps;
+        }
     }
 
     let mut run_context = RunContext::new(&absolute_path_str, stem, output_dir);
     run_context.total_frames = total_frames;
     run_context.fps = fps;
+    run_context.duration_secs = duration_secs;
     run_context.save()?;
 
     Ok(run_context)

@@ -21,6 +21,16 @@ pub fn unit_to_frame(unit_id: usize, source_fps: f64, sample_rate: f64) -> usize
     (unit_id as f64 * source_fps / sample_rate).round() as usize
 }
 
+/// Map a sampled unit index to its absolute time in seconds.
+pub fn unit_to_secs(unit_id: usize, sample_rate: f64) -> f64 {
+    unit_id as f64 / sample_rate
+}
+
+/// Map a sampled unit index to its absolute time in milliseconds.
+pub fn unit_to_msec(unit_id: usize, sample_rate: f64) -> f64 {
+    unit_id as f64 * 1000.0 / sample_rate
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,5 +52,22 @@ mod tests {
         assert_eq!(unit_to_frame(0, 29.0, 1.0), 0);
         assert_eq!(unit_to_frame(1, 29.0, 1.0), 29);
         assert_eq!(unit_to_frame(10, 29.0, 1.0), 290);
+    }
+
+    #[test]
+    fn test_unit_to_time_mapping() {
+        // 1fps sampling
+        assert_eq!(unit_to_secs(0, 1.0), 0.0);
+        assert_eq!(unit_to_secs(1, 1.0), 1.0);
+        assert_eq!(unit_to_secs(60, 1.0), 60.0);
+
+        // 2fps sampling
+        assert_eq!(unit_to_secs(0, 2.0), 0.0);
+        assert_eq!(unit_to_secs(1, 2.0), 0.5);
+        assert_eq!(unit_to_secs(2, 2.0), 1.0);
+
+        // msec
+        assert_eq!(unit_to_msec(1, 1.0), 1000.0);
+        assert_eq!(unit_to_msec(1, 2.0), 500.0);
     }
 }

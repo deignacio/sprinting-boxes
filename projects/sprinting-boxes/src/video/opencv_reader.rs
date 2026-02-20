@@ -4,15 +4,15 @@ use opencv::{
     prelude::*,
     videoio::{
         VideoCapture, CAP_AVFOUNDATION, CAP_PROP_FPS, CAP_PROP_FRAME_COUNT,
-        CAP_PROP_HW_ACCELERATION, CAP_PROP_POS_FRAMES, VIDEO_ACCELERATION_ANY,
+        CAP_PROP_HW_ACCELERATION, CAP_PROP_POS_FRAMES, CAP_PROP_POS_MSEC, VIDEO_ACCELERATION_ANY,
     },
 };
 
 pub struct OpencvReader {
     capture: VideoCapture,
-    _source_fps: f64,
-    _sample_rate: f64,
-    _total_frames: usize,
+    source_fps: f64,
+    sample_rate: f64,
+    total_frames: usize,
 }
 
 impl OpencvReader {
@@ -54,9 +54,9 @@ impl OpencvReader {
 
         Ok(Self {
             capture,
-            _source_fps: fps,
-            _sample_rate: sample_rate,
-            _total_frames: raw_count,
+            source_fps: fps,
+            sample_rate,
+            total_frames: raw_count,
         })
     }
 }
@@ -64,12 +64,12 @@ impl OpencvReader {
 impl VideoReader for OpencvReader {
     fn frame_count(&self) -> Result<usize> {
         let units =
-            (self._total_frames as f64 * self._sample_rate / self._source_fps).floor() as usize;
+            (self.total_frames as f64 * self.sample_rate / self.source_fps).floor() as usize;
         Ok(units.max(1))
     }
 
     fn source_fps(&self) -> Result<f64> {
-        Ok(self._source_fps)
+        Ok(self.source_fps)
     }
 
     fn seek_to_frame(&mut self, frame_num: usize) -> Result<()> {
@@ -88,19 +88,12 @@ impl VideoReader for OpencvReader {
     }
 
     fn read_unit(&mut self, unit_id: usize) -> Result<Mat> {
-        let target_frame = super::unit_to_frame(unit_id, self._source_fps, self._sample_rate);
-        let current_frame = self.capture.get(CAP_PROP_POS_FRAMES)? as usize;
+        let target_msec = super::unit_to_msec(unit_id, self.sample_rate);
+        let current_msec = self.capture.get(CAP_PROP_POS_MSEC)?;
 
-        if target_frame < current_frame {
-            // Must seek backwards
-            self.seek_to_frame(target_frame)?;
-        } else if target_frame > current_frame {
-            // Skip forward efficiently
-            for _ in 0..(target_frame - current_frame) {
-                if !self.capture.grab()? {
-                    return Err(anyhow!("Failed to grab frame at {}", target_frame));
-                }
-            }
+        if (target_msec - current_msec).abs() > 1.0 {
+            // Seek if more than 1ms away
+            self.capture.set(CAP_PROP_POS_MSEC, target_msec)?;
         }
 
         self.read_frame()

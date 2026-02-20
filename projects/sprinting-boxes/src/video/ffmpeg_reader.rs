@@ -472,36 +472,26 @@ impl VideoReader for FfmpegReader {
 
     fn seek_to_frame(&mut self, frame_num: usize) -> Result<()> {
         let time_secs = frame_num as f64 / self.source_fps;
-        let timestamp = (time_secs * ffi::AV_TIME_BASE as f64) as i64;
-        self.input_ctx
-            .seek(timestamp, ..timestamp)
-            .context("Failed to seek")?;
-        self.decoder.flush();
-        self.eof_sent = false;
-        self.scaler = None; // reset scaler on seek (format might change)
+        self.seek_to_time(time_secs)?;
         self.frames_decoded = frame_num;
         Ok(())
     }
 
     fn read_unit(&mut self, unit_id: usize) -> Result<core::Mat> {
+        let target_time_secs = super::unit_to_secs(unit_id, self.sample_rate);
+        let current_time_secs = self.frames_decoded as f64 / self.source_fps;
         let target_frame = super::unit_to_frame(unit_id, self.source_fps, self.sample_rate);
 
-        if target_frame < self.frames_decoded {
-            // Backward seek required
-            self.seek_to_frame(target_frame)?;
+        if target_time_secs < current_time_secs || (target_time_secs - current_time_secs) > 2.0 {
+            // Seek if backward or more than 2 seconds away
+            self.seek_to_time(target_time_secs)?;
+            self.frames_decoded = target_frame;
         } else if target_frame > self.frames_decoded {
-            // Skip forward.
-            // optimization: if target is far, seek.
-            if target_frame - self.frames_decoded > 50 {
-                self.seek_to_frame(target_frame)?;
-            } else {
-                // Ensure skip hint is set for speed during seeking
-                self.set_skip_frame_hint(ffmpeg_next::codec::discard::Discard::NonReference);
-                while self.frames_decoded < target_frame {
-                    // Fast decode to advance
-                    self.receive_into_reuse()?;
-                    self.frames_decoded += 1;
-                }
+            // Skip forward small amount
+            self.set_skip_frame_hint(ffmpeg_next::codec::discard::Discard::NonReference);
+            while self.frames_decoded < target_frame {
+                self.receive_into_reuse()?;
+                self.frames_decoded += 1;
             }
         }
 
@@ -517,5 +507,18 @@ impl VideoReader for FfmpegReader {
         self.frames_decoded += 1;
 
         Ok(bgr_mat)
+    }
+}
+
+impl FfmpegReader {
+    pub fn seek_to_time(&mut self, time_secs: f64) -> Result<()> {
+        let timestamp = (time_secs * ffi::AV_TIME_BASE as f64) as i64;
+        self.input_ctx
+            .seek(timestamp, ..timestamp)
+            .context("Failed to seek")?;
+        self.decoder.flush();
+        self.eof_sent = false;
+        self.scaler = None; // reset scaler on seek (format might change)
+        Ok(())
     }
 }

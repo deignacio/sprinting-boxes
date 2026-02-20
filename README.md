@@ -38,7 +38,7 @@ Sprinting Boxes is optimized for 8K video analysis with a high-throughput pipeli
 - **Parallel Video Reading**: Scalable, sharded video reading using a work-stealing range pool.
 - **Hardware Acceleration**: GPU-accelerated decoding via VideoToolbox (on macOS) with transparent CPU fallback.
 - **Dynamic Scaling**: Runtime adjustment of reader, crop, and detection workers via the dashboard.
-- **Absolute Unit Mapping**: Zero-drift sampling logic that guarantees 100% frame accuracy regardless of video FPS (e.g., 29.97).
+- **Absolute Unit Mapping**: Zero-drift sampling logic that uses temporal seeking (msec) to guarantee 100% sync accuracy regardless of video FPS jitter or VFR.
 - **On-Demand Image Annotation**: Reduces storage by saving raw crops, and dynamically annotates images only when viewed in the dashboard.
 
 
