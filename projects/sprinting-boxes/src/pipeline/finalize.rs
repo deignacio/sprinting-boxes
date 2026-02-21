@@ -1,10 +1,14 @@
-use crate::pipeline::types::{DetectedFrame, ProcessingState};
+use crate::pipeline::types::{
+    polygon_to_compact, CompactCropData, CompactDetection, CompactDetectionFile, CompactFrameData,
+    CompactRegion, DetectedFrame, ProcessingState,
+};
 use anyhow::Result;
 use crossbeam::channel::Receiver;
 use opencv::core::Mat;
 use opencv::core::{Point, Scalar, Vector};
 use opencv::imgproc::{circle, polylines, rectangle, LINE_8};
 use opencv::prelude::MatTraitConst;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -153,6 +157,59 @@ pub fn draw_annotations(
     Ok(draw_img)
 }
 
+/// Convert a DetectedFrame to CompactFrameData for optimized JSON output
+fn convert_to_compact(frame: &DetectedFrame) -> CompactFrameData {
+    let mut crops = HashMap::new();
+
+    for result in &frame.results {
+        let compact_detections: Vec<CompactDetection> = result
+            .detections
+            .iter()
+            .map(|d| CompactDetection {
+                x: d.bbox.x,
+                y: d.bbox.y,
+                w: d.bbox.w,
+                h: d.bbox.h,
+                confidence: d.confidence,
+                in_end_zone: d.in_end_zone,
+                in_field: d.in_field,
+            })
+            .collect();
+
+        let compact_crop_data = if result.suffix == "overview" {
+            // Overview: include regions
+            let compact_regions: Vec<CompactRegion> = result
+                .regions
+                .iter()
+                .map(|r| CompactRegion {
+                    name: r.name.clone(),
+                    polygon: polygon_to_compact(&r.polygon),
+                })
+                .collect();
+
+            CompactCropData {
+                detections: compact_detections,
+                regions: Some(compact_regions),
+                source_bbox: None,
+            }
+        } else {
+            // EZ crops (left/right): include source_bbox
+            CompactCropData {
+                detections: compact_detections,
+                regions: None,
+                source_bbox: Some(result.bbox),
+            }
+        };
+
+        crops.insert(result.suffix.clone(), compact_crop_data);
+    }
+
+    CompactFrameData {
+        id: frame.id,
+        crops,
+    }
+}
+
 /// Finalize worker: receives detected frames, draws detections/polygons, and saves results.
 pub fn finalize_worker(
     rx: Receiver<DetectedFrame>,
@@ -167,20 +224,28 @@ pub fn finalize_worker(
         let _ = fs::create_dir_all(&crops_dir);
     }
 
-    let mut all_results = Vec::new();
+    let mut compact_file = CompactDetectionFile::new();
 
     // In Field mode, try to load the existing pull_detections to merge into
     if mode == crate::pipeline::types::PipelineMode::Field {
         let pull_path = output_dir.join("pull_detections.json");
         if pull_path.exists() {
             if let Ok(json) = fs::read_to_string(&pull_path) {
-                if let Ok(pull_data) = serde_json::from_str::<Vec<DetectedFrame>>(&json) {
+                // Try to load as compact format first
+                if let Ok(pull_data) = serde_json::from_str::<CompactDetectionFile>(&json) {
                     tracing::info!(
-                        "Loaded {} existing frames from pull_detections.json to merge",
+                        "Loaded {} existing frames from pull_detections.json (compact format)",
+                        pull_data.frames.len()
+                    );
+                    compact_file = pull_data;
+                } else if let Ok(pull_data) = serde_json::from_str::<Vec<DetectedFrame>>(&json) {
+                    // Fallback to old format
+                    tracing::info!(
+                        "Loaded {} existing frames from pull_detections.json (legacy format)",
                         pull_data.len()
                     );
-                    // Pre-allocate assuming we process the same frame sequence
-                    all_results = pull_data;
+                    // Convert legacy format to compact format
+                    compact_file.frames = pull_data.iter().map(convert_to_compact).collect();
                 }
             }
         } else {
@@ -225,39 +290,42 @@ pub fn finalize_worker(
             }
         }
 
+        // Convert to compact format
+        let compact_frame = convert_to_compact(&frame);
+
         if mode == crate::pipeline::types::PipelineMode::Field {
-            // MERGE LOGIC: We already loaded `pull_detections.json` into `all_results`.
+            // MERGE LOGIC: We already loaded `pull_detections.json` into `compact_file`.
             // The incoming `frame` from FeatureWorker is already merged (metrics + detections).
-            if let Some(idx) = all_results.iter().position(|f| f.id == frame.id) {
-                all_results[idx] = frame.clone();
+            if let Some(idx) = compact_file.frames.iter().position(|f| f.id == frame.id) {
+                compact_file.frames[idx] = compact_frame;
             } else {
-                all_results.push(frame.clone());
+                compact_file.frames.push(compact_frame);
             }
         } else {
             // Pull mode: just accumulate
-            all_results.push(frame.clone());
+            compact_file.frames.push(compact_frame);
         }
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
         state.update_stage("finalize", 1, duration_ms);
 
         // Periodically save
-        if !all_results.is_empty() && all_results.len() % 25 == 0 {
+        if !compact_file.frames.is_empty() && compact_file.frames.len() % 25 == 0 {
             let results_path = output_dir.join(target_filename);
-            let json = serde_json::to_string(&all_results).unwrap_or_default();
+            let json = serde_json::to_string(&compact_file).unwrap_or_default();
             let _ = fs::write(results_path, json);
         }
     }
 
     tracing::info!(
         "Finalize worker finished processing {} frames. Saving {}...",
-        all_results.len(),
+        compact_file.frames.len(),
         target_filename
     );
 
-    // Save final detections
+    // Save final detections in compact format
     let results_path = output_dir.join(target_filename);
-    let json = serde_json::to_string_pretty(&all_results)?;
+    let json = serde_json::to_string_pretty(&compact_file)?;
     fs::write(&results_path, json)?;
     tracing::info!("Saved final {} to {:?}", target_filename, results_path);
 

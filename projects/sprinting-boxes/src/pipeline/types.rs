@@ -411,6 +411,85 @@ pub struct DetectedFrame {
     pub std_dev_delta: Option<f32>,
 }
 
+/// Compact detection format for JSON output (optimized for size)
+/// Contains only the data needed for visualization, not computed metrics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactDetection {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(rename = "conf")]
+    pub confidence: f32,
+    #[serde(rename = "in_end_zone")]
+    pub in_end_zone: bool,
+    #[serde(rename = "in_field")]
+    pub in_field: bool,
+}
+
+/// Compact polygon representation using arrays instead of objects
+pub type CompactPolygon = Vec<[f32; 2]>;
+
+/// Compact region representation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactRegion {
+    pub name: String,
+    pub polygon: CompactPolygon,
+}
+
+/// Compact crop data - contains only visualization data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactCropData {
+    pub detections: Vec<CompactDetection>,
+    /// Regions are only included for overview crops
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regions: Option<Vec<CompactRegion>>,
+    /// Source bbox is only included for EZ crops (left/right)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bbox: Option<BBox>,
+}
+
+/// Compact frame data - uses HashMap for crops instead of Vec
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactFrameData {
+    pub id: usize,
+    pub crops: std::collections::HashMap<String, CompactCropData>,
+}
+
+/// Compact detection file format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactDetectionFile {
+    pub version: u32,
+    pub frames: Vec<CompactFrameData>,
+}
+
+impl CompactDetectionFile {
+    pub const CURRENT_VERSION: u32 = 2;
+
+    pub fn new() -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            frames: Vec::new(),
+        }
+    }
+}
+
+impl Default for CompactDetectionFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Convert polygon from Vec<Point> to CompactPolygon
+pub fn polygon_to_compact(polygon: &[Point]) -> CompactPolygon {
+    polygon.iter().map(|p| [p.x, p.y]).collect()
+}
+
+/// Convert polygon from CompactPolygon to Vec<Point>
+pub fn compact_to_polygon(compact: &CompactPolygon) -> Vec<Point> {
+    compact.iter().map(|[x, y]| Point { x: *x, y: *y }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

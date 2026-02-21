@@ -22,7 +22,103 @@ use std::sync::Arc;
 use super::models::{AuditSettings, AuditState, CliffData};
 use super::utils::{format_timestamp, get_sample_rate, parse_duration_to_secs, recalculate_audit};
 use crate::cli::Args;
+use crate::pipeline::types::{compact_to_polygon, CompactDetectionFile};
 use crate::run_context::list_runs;
+
+/// Load detections from JSON file, supporting both compact and legacy formats
+fn load_detections(
+    detections_path: &std::path::Path,
+) -> Result<HashMap<usize, HashMap<String, crate::pipeline::types::CropResult>>, StatusCode> {
+    let detections_json =
+        fs::read_to_string(detections_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Try to load as compact format first
+    if let Ok(compact_file) = serde_json::from_str::<CompactDetectionFile>(&detections_json) {
+        let mut result = HashMap::new();
+        for compact_frame in compact_file.frames {
+            let mut crops = HashMap::new();
+            for (suffix, compact_crop) in compact_frame.crops {
+                let regions = if suffix == "overview" {
+                    compact_crop.regions.clone()
+                } else {
+                    None
+                };
+
+                let regions = if let Some(compact_regions) = regions {
+                    compact_regions
+                        .iter()
+                        .map(|r| crate::pipeline::types::RegionalPolygon {
+                            name: r.name.clone(),
+                            polygon: compact_to_polygon(&r.polygon),
+                            effective_polygon: compact_to_polygon(&r.polygon),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                let detections = compact_crop
+                    .detections
+                    .iter()
+                    .map(|d| crate::pipeline::types::EnrichedDetection {
+                        bbox: crate::pipeline::types::BBox {
+                            x: d.x,
+                            y: d.y,
+                            w: d.w,
+                            h: d.h,
+                        },
+                        confidence: d.confidence,
+                        class_id: 0,
+                        class_name: Some("person".to_string()),
+                        in_end_zone: d.in_end_zone,
+                        in_field: d.in_field,
+                    })
+                    .collect();
+
+                let source_bbox = if suffix == "left" || suffix == "right" {
+                    compact_crop.source_bbox
+                } else {
+                    None
+                };
+
+                crops.insert(
+                    suffix.clone(),
+                    crate::pipeline::types::CropResult {
+                        suffix,
+                        detections,
+                        original_polygon: Vec::new(),
+                        effective_polygon: Vec::new(),
+                        bbox: source_bbox.unwrap_or(crate::pipeline::types::BBox {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 0.0,
+                            h: 0.0,
+                        }),
+                        image: None,
+                        regions,
+                    },
+                );
+            }
+            result.insert(compact_frame.id, crops);
+        }
+        Ok(result)
+    } else if let Ok(legacy_frames) =
+        serde_json::from_str::<Vec<crate::pipeline::types::DetectedFrame>>(&detections_json)
+    {
+        // Fallback to legacy format
+        let mut result = HashMap::new();
+        for frame in legacy_frames {
+            let mut crops = HashMap::new();
+            for crop_result in frame.results {
+                crops.insert(crop_result.suffix.clone(), crop_result);
+            }
+            result.insert(frame.id, crops);
+        }
+        Ok(result)
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
 
 /// Load audit state from CSV and optional JSON file
 fn load_or_init_audit_state(
@@ -409,25 +505,20 @@ pub async fn serve_run_crop_handler(
             }
         }
 
-        let detections_json =
-            fs::read_to_string(&detections_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let all_frames: Vec<crate::pipeline::types::DetectedFrame> =
-            serde_json::from_str(&detections_json)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let all_frames = load_detections(&detections_path)?;
 
-        let frame = all_frames
-            .iter()
-            .find(|f| f.id == frame_index)
+        let frame_crops = all_frames
+            .get(&frame_index)
             .ok_or(StatusCode::NOT_FOUND)?;
 
-        let crop_result = frame
-            .results
-            .iter()
-            .find(|r| r.suffix == suffix)
+        let crop_result = frame_crops
+            .get(suffix)
             .ok_or(StatusCode::NOT_FOUND)?;
 
+        // Note: We pass None for the frame parameter since metrics are now in CSV files
+        // The CoM/StdDev visualization will be skipped for compact format
         let annotated_img =
-            crate::pipeline::finalize::draw_annotations(&img, crop_result, Some(frame))
+            crate::pipeline::finalize::draw_annotations(&img, crop_result, None)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let mut buf = opencv::core::Vector::<u8>::new();
