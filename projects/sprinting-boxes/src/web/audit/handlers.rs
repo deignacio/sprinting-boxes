@@ -447,19 +447,18 @@ pub async fn serve_run_crop_handler(
     let crops_dir = run_context.output_dir.join("crops");
     let mut file_path = crops_dir.join(&filename);
 
-    if !file_path.exists()
-        && filename.contains("_overview.jpg") {
-            let frame_prefix = filename.split("_overview.jpg").next().unwrap_or("");
-            if let Ok(entries) = fs::read_dir(&crops_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with(frame_prefix) && name.ends_with(".jpg") {
-                        file_path = crops_dir.join(name);
-                        break;
-                    }
+    if !file_path.exists() && filename.contains("_overview.jpg") {
+        let frame_prefix = filename.split("_overview.jpg").next().unwrap_or("");
+        if let Ok(entries) = fs::read_dir(&crops_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(frame_prefix) && name.ends_with(".jpg") {
+                    file_path = crops_dir.join(name);
+                    break;
                 }
             }
         }
+    }
 
     if !file_path.exists() {
         return Err(StatusCode::NOT_FOUND);
@@ -507,19 +506,14 @@ pub async fn serve_run_crop_handler(
 
         let all_frames = load_detections(&detections_path)?;
 
-        let frame_crops = all_frames
-            .get(&frame_index)
-            .ok_or(StatusCode::NOT_FOUND)?;
+        let frame_crops = all_frames.get(&frame_index).ok_or(StatusCode::NOT_FOUND)?;
 
-        let crop_result = frame_crops
-            .get(suffix)
-            .ok_or(StatusCode::NOT_FOUND)?;
+        let crop_result = frame_crops.get(suffix).ok_or(StatusCode::NOT_FOUND)?;
 
         // Note: We pass None for the frame parameter since metrics are now in CSV files
         // The CoM/StdDev visualization will be skipped for compact format
-        let annotated_img =
-            crate::pipeline::finalize::draw_annotations(&img, crop_result, None)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let annotated_img = crate::pipeline::finalize::draw_annotations(&img, crop_result, None)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let mut buf = opencv::core::Vector::<u8>::new();
         opencv::imgcodecs::imencode(

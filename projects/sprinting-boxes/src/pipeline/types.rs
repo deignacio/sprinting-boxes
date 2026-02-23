@@ -409,6 +409,9 @@ pub struct DetectedFrame {
     pub com_delta_x: Option<f32>,
     pub com_delta_y: Option<f32>,
     pub std_dev_delta: Option<f32>,
+    // NMS statistics (optional, for debugging)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detection_summary: Option<DetectionSummary>,
 }
 
 /// Compact detection format for JSON output (optimized for size)
@@ -449,6 +452,73 @@ pub struct CompactCropData {
     pub source_bbox: Option<BBox>,
 }
 
+/// Trait for types that can be used in Non-Maximum Suppression
+/// Provides access to bounding box coordinates and confidence score
+pub trait BoundingBox {
+    /// Get the minimum x coordinate
+    fn xmin(&self) -> f32;
+    /// Get the minimum y coordinate
+    fn ymin(&self) -> f32;
+    /// Get the width of the bounding box
+    fn width(&self) -> f32;
+    /// Get the height of the bounding box
+    fn height(&self) -> f32;
+    /// Get the confidence score (0.0 to 1.0)
+    fn confidence(&self) -> f32;
+}
+
+/// Detailed statistics from NMS operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NmsStats {
+    /// Total number of detections before NMS
+    pub original_count: usize,
+    /// Number of detections suppressed by NMS
+    pub suppressed_count: usize,
+    /// Number of detections that were close to being suppressed (IoU > 0.3 but <= threshold)
+    pub close_but_kept_count: usize,
+    /// Number of detections kept after NMS
+    pub kept_count: usize,
+}
+
+/// Detection summary for a single frame
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionSummary {
+    /// Frame ID
+    pub frame_id: usize,
+    /// NMS statistics for overview crop
+    pub overview_nms: Option<NmsStats>,
+    /// NMS statistics for left end zone crop
+    pub left_nms: Option<NmsStats>,
+    /// NMS statistics for right end zone crop
+    pub right_nms: Option<NmsStats>,
+    /// NMS statistics for merge phase (overview + EZ)
+    pub merge_nms: Option<NmsStats>,
+    /// Number of detections kept in left region (after all NMS)
+    pub left_kept: usize,
+    /// Number of detections kept in right region (after all NMS)
+    pub right_kept: usize,
+    /// Number of detections kept in field region (after all NMS)
+    pub field_kept: usize,
+}
+
+impl BoundingBox for EnrichedDetection {
+    fn xmin(&self) -> f32 {
+        self.bbox.x
+    }
+    fn ymin(&self) -> f32 {
+        self.bbox.y
+    }
+    fn width(&self) -> f32 {
+        self.bbox.w
+    }
+    fn height(&self) -> f32 {
+        self.bbox.h
+    }
+    fn confidence(&self) -> f32 {
+        self.confidence
+    }
+}
+
 /// Compact frame data - uses HashMap for crops instead of Vec
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactFrameData {
@@ -487,7 +557,10 @@ pub fn polygon_to_compact(polygon: &[Point]) -> CompactPolygon {
 
 /// Convert polygon from CompactPolygon to Vec<Point>
 pub fn compact_to_polygon(compact: &CompactPolygon) -> Vec<Point> {
-    compact.iter().map(|[x, y]| Point { x: *x, y: *y }).collect()
+    compact
+        .iter()
+        .map(|[x, y]| Point { x: *x, y: *y })
+        .collect()
 }
 
 #[cfg(test)]

@@ -296,7 +296,7 @@ fn compact_crop_to_result(
             class_id: 0,
             class_name: Some("person".to_string()),
             in_end_zone: d.in_end_zone,
-            in_field: d.in_field,
+            in_field: d.in_field, // Preserve compact format values
         })
         .collect();
 
@@ -354,6 +354,50 @@ fn compact_frame_to_detected(compact: &CompactFrameData) -> DetectedFrame {
         ));
     }
 
+    // Correct in_field and in_end_zone flags from compact format
+    // The compact format may have incorrect in_field/in_end_zone values from pull mode.
+    // We need to refine these based on actual region polygons.
+    for result in &mut results {
+        if result.suffix == "overview" {
+            // For overview crop, refine all detections based on region polygons
+            let mut refined_detections = Vec::new();
+
+            for mut detection in result.detections.drain(..) {
+                let mut in_any_region = false;
+
+                // Check each region
+                for region in &result.regions {
+                    if is_point_in_polygon_robust(
+                        detection.bbox.x + detection.bbox.w / 2.0,
+                        detection.bbox.y + detection.bbox.h / 2.0,
+                        &region.effective_polygon,
+                    ) {
+                        in_any_region = true;
+                        if region.name == "left" {
+                            detection.in_end_zone = true;
+                        } else if region.name == "right" {
+                            detection.in_end_zone = true;
+                        } else if region.name == "field" {
+                            detection.in_field = true;
+                        }
+                        // Only set one flag per detection
+                        break;
+                    }
+                }
+
+                // If detection is not in any region, mark as neither
+                if !in_any_region {
+                    detection.in_field = false;
+                    detection.in_end_zone = false;
+                }
+
+                refined_detections.push(detection);
+            }
+
+            result.detections = refined_detections;
+        }
+    }
+
     DetectedFrame {
         id: compact.id,
         results,
@@ -372,6 +416,7 @@ fn compact_frame_to_detected(compact: &CompactFrameData) -> DetectedFrame {
         com_delta_x: None,
         com_delta_y: None,
         std_dev_delta: None,
+        detection_summary: None,
     }
 }
 
@@ -794,11 +839,17 @@ fn calculate_frame_metrics(
                                     &region.effective_polygon,
                                 )
                             {
-                                field_c += 1;
                                 d.in_field = true;
+                                field_c += 1;
                                 break;
                             }
                         }
+                    }
+
+                    // If detection is in overview crop but not in any region, mark as not in field
+                    if !matched && res.suffix == "overview" {
+                        d.in_field = false;
+                        d.in_end_zone = false;
                     }
 
                     if d.in_end_zone || d.in_field {

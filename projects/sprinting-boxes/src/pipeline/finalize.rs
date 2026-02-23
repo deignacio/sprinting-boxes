@@ -4,6 +4,7 @@ use crate::pipeline::types::{
 };
 use anyhow::Result;
 use crossbeam::channel::Receiver;
+use csv::Writer;
 use opencv::core::Mat;
 use opencv::core::{Point, Scalar, Vector};
 use opencv::imgproc::{circle, polylines, rectangle, LINE_8};
@@ -226,6 +227,35 @@ pub fn finalize_worker(
 
     let mut compact_file = CompactDetectionFile::new();
 
+    // Create CSV writer for detection summaries
+    let summary_path = output_dir.join("detection_summary.csv");
+    let mut summary_writer = Writer::from_path(&summary_path)
+        .map_err(|e| anyhow::anyhow!("Failed to create detection_summary.csv: {}", e))?;
+
+    // Write CSV header
+    summary_writer.write_record([
+        "frame_id",
+        "overview_original",
+        "overview_suppressed",
+        "overview_close_but_kept",
+        "overview_kept",
+        "left_original",
+        "left_suppressed",
+        "left_close_but_kept",
+        "left_kept",
+        "right_original",
+        "right_suppressed",
+        "right_close_but_kept",
+        "right_kept",
+        "merge_original",
+        "merge_suppressed",
+        "merge_close_but_kept",
+        "merge_kept",
+        "left_region_kept",
+        "right_region_kept",
+        "field_region_kept",
+    ])?;
+
     // In Field mode, try to load the existing pull_detections to merge into
     if mode == crate::pipeline::types::PipelineMode::Field {
         let pull_path = output_dir.join("pull_detections.json");
@@ -275,6 +305,63 @@ pub fn finalize_worker(
             break;
         }
 
+        // Write detection summary to CSV
+        if let Some(summary) = &frame.detection_summary {
+            let overview = summary.overview_nms.as_ref();
+            let left = summary.left_nms.as_ref();
+            let right = summary.right_nms.as_ref();
+            let merge = summary.merge_nms.as_ref();
+
+            summary_writer.write_record([
+                &summary.frame_id.to_string(),
+                &overview
+                    .map(|s| s.original_count.to_string())
+                    .unwrap_or_default(),
+                &overview
+                    .map(|s| s.suppressed_count.to_string())
+                    .unwrap_or_default(),
+                &overview
+                    .map(|s| s.close_but_kept_count.to_string())
+                    .unwrap_or_default(),
+                &overview
+                    .map(|s| s.kept_count.to_string())
+                    .unwrap_or_default(),
+                &left
+                    .map(|s| s.original_count.to_string())
+                    .unwrap_or_default(),
+                &left
+                    .map(|s| s.suppressed_count.to_string())
+                    .unwrap_or_default(),
+                &left
+                    .map(|s| s.close_but_kept_count.to_string())
+                    .unwrap_or_default(),
+                &left.map(|s| s.kept_count.to_string()).unwrap_or_default(),
+                &right
+                    .map(|s| s.original_count.to_string())
+                    .unwrap_or_default(),
+                &right
+                    .map(|s| s.suppressed_count.to_string())
+                    .unwrap_or_default(),
+                &right
+                    .map(|s| s.close_but_kept_count.to_string())
+                    .unwrap_or_default(),
+                &right.map(|s| s.kept_count.to_string()).unwrap_or_default(),
+                &merge
+                    .map(|s| s.original_count.to_string())
+                    .unwrap_or_default(),
+                &merge
+                    .map(|s| s.suppressed_count.to_string())
+                    .unwrap_or_default(),
+                &merge
+                    .map(|s| s.close_but_kept_count.to_string())
+                    .unwrap_or_default(),
+                &merge.map(|s| s.kept_count.to_string()).unwrap_or_default(),
+                &summary.left_kept.to_string(),
+                &summary.right_kept.to_string(),
+                &summary.field_kept.to_string(),
+            ])?;
+        }
+
         // We only save raw crop images in Pull mode
         if save_crops && mode == crate::pipeline::types::PipelineMode::Pull {
             for result in &frame.results {
@@ -310,7 +397,7 @@ pub fn finalize_worker(
         state.update_stage("finalize", 1, duration_ms);
 
         // Periodically save
-        if !compact_file.frames.is_empty() && compact_file.frames.len() % 25 == 0 {
+        if !compact_file.frames.is_empty() && compact_file.frames.len().is_multiple_of(25) {
             let results_path = output_dir.join(target_filename);
             let json = serde_json::to_string(&compact_file).unwrap_or_default();
             let _ = fs::write(results_path, json);
@@ -328,6 +415,10 @@ pub fn finalize_worker(
     let json = serde_json::to_string_pretty(&compact_file)?;
     fs::write(&results_path, json)?;
     tracing::info!("Saved final {} to {:?}", target_filename, results_path);
+
+    // Flush detection summary CSV
+    summary_writer.flush()?;
+    tracing::info!("Saved detection summary to {:?}", summary_path);
 
     state.is_complete.store(true, Ordering::Relaxed);
     state.is_active.store(false, Ordering::Relaxed);

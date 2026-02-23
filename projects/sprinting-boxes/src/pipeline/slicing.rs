@@ -1,7 +1,41 @@
-use crate::pipeline::types::Point;
+use crate::pipeline::types::{BoundingBox, Point};
 use anyhow::Result;
 use opencv::core::{Mat, Rect, Scalar};
 use opencv::prelude::*;
+
+/// Wrapper around usls::Hbb to implement BoundingBox trait
+#[derive(Clone)]
+pub struct HbbWrapper(pub usls::Hbb);
+
+impl BoundingBox for HbbWrapper {
+    fn xmin(&self) -> f32 {
+        self.0.xmin()
+    }
+    fn ymin(&self) -> f32 {
+        self.0.ymin()
+    }
+    fn width(&self) -> f32 {
+        self.0.width()
+    }
+    fn height(&self) -> f32 {
+        self.0.height()
+    }
+    fn confidence(&self) -> f32 {
+        self.0.confidence().unwrap_or(0.0)
+    }
+}
+
+impl From<HbbWrapper> for usls::Hbb {
+    fn from(wrapper: HbbWrapper) -> Self {
+        wrapper.0
+    }
+}
+
+impl From<usls::Hbb> for HbbWrapper {
+    fn from(hbb: usls::Hbb) -> Self {
+        HbbWrapper(hbb)
+    }
+}
 
 /// Configuration for sliding window inference
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -300,16 +334,37 @@ pub fn transform_detection_to_image_coords(detection: &usls::Hbb, tile: &Tile) -
 }
 
 /// Apply Non-Maximum Suppression to remove duplicate detections
-pub fn nms(detections: Vec<usls::Hbb>, iou_threshold: f32) -> Vec<usls::Hbb> {
+/// Generic version that works with any type implementing BoundingBox
+/// Returns (filtered detections, NMS statistics)
+pub fn nms<T: BoundingBox + Clone>(
+    detections: Vec<T>,
+    iou_threshold: f32,
+) -> (Vec<T>, crate::pipeline::types::NmsStats) {
     if detections.is_empty() {
-        return detections;
+        return (
+            detections,
+            crate::pipeline::types::NmsStats {
+                original_count: 0,
+                suppressed_count: 0,
+                close_but_kept_count: 0,
+                kept_count: 0,
+            },
+        );
     }
+
+    tracing::debug!(
+        "NMS: Processing {} detections with IoU threshold {}",
+        detections.len(),
+        iou_threshold
+    );
+
+    let original_count = detections.len();
 
     // Sort by confidence (highest first)
     let mut sorted: Vec<_> = detections.into_iter().collect();
     sorted.sort_by(|a, b| {
-        let conf_a = a.confidence().unwrap_or(0.0);
-        let conf_b = b.confidence().unwrap_or(0.0);
+        let conf_a = a.confidence();
+        let conf_b = b.confidence();
         conf_b
             .partial_cmp(&conf_a)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -317,6 +372,8 @@ pub fn nms(detections: Vec<usls::Hbb>, iou_threshold: f32) -> Vec<usls::Hbb> {
 
     let mut keep = Vec::new();
     let mut suppressed = vec![false; sorted.len()];
+    let mut suppression_count = 0;
+    let mut close_but_kept_count = 0;
 
     for i in 0..sorted.len() {
         if suppressed[i] {
@@ -330,18 +387,65 @@ pub fn nms(detections: Vec<usls::Hbb>, iou_threshold: f32) -> Vec<usls::Hbb> {
                 continue;
             }
 
-            let iou = compute_iou(&sorted[i], &sorted[j]);
+            let iou = compute_iou_bbox(&sorted[i], &sorted[j]);
             if iou > iou_threshold {
                 suppressed[j] = true;
+                suppression_count += 1;
+
+                // Log high-overlap pairs that are being suppressed
+                if iou > 0.7 {
+                    tracing::debug!(
+                        "NMS: Suppressing detection {} (conf={:.2}) with IoU={:.3} vs detection {} (conf={:.2})",
+                        j,
+                        sorted[j].confidence(),
+                        iou,
+                        i,
+                        sorted[i].confidence()
+                    );
+                }
+            } else if iou > 0.3 {
+                // Log moderate-overlap pairs that are NOT being suppressed
+                close_but_kept_count += 1;
+                tracing::trace!(
+                    "NMS: NOT suppressing detection {} (conf={:.2}) with IoU={:.3} vs detection {} (conf={:.2}) - BELOW THRESHOLD",
+                    j,
+                    sorted[j].confidence(),
+                    iou,
+                    i,
+                    sorted[i].confidence()
+                );
             }
         }
     }
 
-    keep
+    let kept_count = keep.len();
+
+    tracing::debug!(
+        "NMS: Kept {} detections, suppressed {} ({}%), close but kept {}",
+        kept_count,
+        suppression_count,
+        if kept_count + suppression_count > 0 {
+            (suppression_count * 100) / (kept_count + suppression_count)
+        } else {
+            0
+        },
+        close_but_kept_count
+    );
+
+    (
+        keep,
+        crate::pipeline::types::NmsStats {
+            original_count,
+            suppressed_count: suppression_count,
+            close_but_kept_count,
+            kept_count,
+        },
+    )
 }
 
 /// Compute Intersection over Union between two bounding boxes
-fn compute_iou(a: &usls::Hbb, b: &usls::Hbb) -> f32 {
+/// Generic version that works with any type implementing BoundingBox
+fn compute_iou_bbox<T: BoundingBox>(a: &T, b: &T) -> f32 {
     let x1 = a.xmin().max(b.xmin());
     let y1 = a.ymin().max(b.ymin());
     let x2 = (a.xmin() + a.width()).min(b.xmin() + b.width());
@@ -357,6 +461,7 @@ fn compute_iou(a: &usls::Hbb, b: &usls::Hbb) -> f32 {
     let union = area_a + area_b - intersection;
 
     if union <= 0.0 {
+        tracing::warn!("NMS: Union area is zero or negative (union={})", union);
         0.0
     } else {
         intersection / union

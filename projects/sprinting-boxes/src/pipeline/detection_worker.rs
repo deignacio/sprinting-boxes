@@ -1,9 +1,10 @@
 use crate::pipeline::detection::ObjectDetector;
 use crate::pipeline::slicing::{
-    generate_tiles, nms, transform_detection_to_image_coords, SliceConfig,
+    generate_tiles, nms, transform_detection_to_image_coords, HbbWrapper, SliceConfig,
 };
 use crate::pipeline::types::{
-    BBox, CropResult, DetectedFrame, EnrichedDetection, PreprocessedFrame, ProcessingState,
+    BBox, CropResult, DetectedFrame, DetectionSummary, EnrichedDetection, PreprocessedFrame,
+    ProcessingState,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -155,17 +156,29 @@ pub fn detection_worker(
                 }
             });
 
-        // Initialize CropResults
+        // Initialize CropResults and track NMS statistics
+        let mut nms_stats_by_crop = Vec::new();
         for (i, crop) in frame.crops.iter().enumerate() {
-            let nms_results = nms(
-                detections_by_crop[i].clone(),
-                params.slice_config.nms_iou_threshold,
-            );
+            // Convert usls::Hbb to HbbWrapper for unified NMS
+            let wrapped_detections: Vec<HbbWrapper> = detections_by_crop[i]
+                .clone()
+                .into_iter()
+                .map(HbbWrapper::from)
+                .collect();
+
+            let (nms_results, nms_stat) =
+                nms(wrapped_detections, params.slice_config.nms_iou_threshold);
+            nms_stats_by_crop.push((crop.suffix.clone(), nms_stat));
+
+            // Convert back from HbbWrapper to usls::Hbb
+            let nms_hbbs: Vec<usls::Hbb> =
+                nms_results.into_iter().map(|wrapper| wrapper.0).collect();
+
             let size = crop.image.size()?;
 
             results.push(CropResult {
                 suffix: crop.suffix.clone(),
-                detections: nms_results
+                detections: nms_hbbs
                     .into_iter()
                     .map(|d| EnrichedDetection {
                         bbox: BBox {
@@ -195,6 +208,7 @@ pub fn detection_worker(
         }
 
         // 4. Merging Phase: Merge EZ detections into the overview CropResult
+        let mut merge_nms_stat = None;
         if let Some((ov_index, ov_bbox, ov_w, ov_h)) = overview_info {
             let mut merged_ez_detections = Vec::new();
 
@@ -230,58 +244,27 @@ pub fn detection_worker(
 
             // Append merged EZ detections to the overview CropResult
             if let Some(ov_result) = results.get_mut(ov_index) {
+                let overview_count = ov_result.detections.len();
+                tracing::debug!(
+                    "Merge phase: Before NMS - {} overview detections + {} merged EZ detections = {} total",
+                    overview_count,
+                    merged_ez_detections.len(),
+                    overview_count + merged_ez_detections.len()
+                );
                 ov_result.detections.extend(merged_ez_detections);
 
                 // FINAL NMS to remove duplicates between overview-field and EZ-highres detections
-                let mut sorted_indices: Vec<usize> = (0..ov_result.detections.len()).collect();
-                sorted_indices.sort_by(|&a, &b| {
-                    ov_result.detections[b]
-                        .confidence
-                        .partial_cmp(&ov_result.detections[a].confidence)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                let mut keep = Vec::new();
-                let mut suppressed = vec![false; ov_result.detections.len()];
+                // Use unified NMS function with diagnostic logging
                 let iou_threshold = params.slice_config.nms_iou_threshold;
+                let (filtered_detections, nms_stat) =
+                    nms(ov_result.detections.clone(), iou_threshold);
+                merge_nms_stat = Some(nms_stat);
+                ov_result.detections = filtered_detections;
 
-                for i in 0..sorted_indices.len() {
-                    let idx_i = sorted_indices[i];
-                    if suppressed[idx_i] {
-                        continue;
-                    }
-                    keep.push(idx_i);
-
-                    for &idx_j in sorted_indices.iter().skip(i + 1) {
-                        if suppressed[idx_j] {
-                            continue;
-                        }
-
-                        let b1 = &ov_result.detections[idx_i].bbox;
-                        let b2 = &ov_result.detections[idx_j].bbox;
-
-                        // Calculate IoU
-                        let x1 = b1.x.max(b2.x);
-                        let y1 = b1.y.max(b2.y);
-                        let x2 = (b1.x + b1.w).min(b2.x + b2.w);
-                        let y2 = (b1.y + b1.h).min(b2.y + b2.h);
-                        let w = (x2 - x1).max(0.0);
-                        let h = (y2 - y1).max(0.0);
-                        let intersection = w * h;
-                        let union = b1.w * b1.h + b2.w * b2.h - intersection;
-                        let iou = intersection / union;
-
-                        if iou > iou_threshold {
-                            suppressed[idx_j] = true;
-                        }
-                    }
-                }
-
-                let mut filtered = Vec::with_capacity(keep.len());
-                for idx in keep {
-                    filtered.push(ov_result.detections[idx].clone());
-                }
-                ov_result.detections = filtered;
+                tracing::debug!(
+                    "Merge phase: After NMS - {} detections remaining",
+                    ov_result.detections.len()
+                );
             }
         }
 
@@ -299,6 +282,50 @@ pub fn detection_worker(
                 }
             }
         }
+
+        // Create detection summary
+        let mut overview_nms = None;
+        let mut left_nms = None;
+        let mut right_nms = None;
+
+        for (suffix, stat) in &nms_stats_by_crop {
+            match suffix.as_str() {
+                "overview" => overview_nms = Some(stat.clone()),
+                "left" => left_nms = Some(stat.clone()),
+                "right" => right_nms = Some(stat.clone()),
+                _ => {}
+            }
+        }
+
+        // Count detections in each region
+        let mut left_kept = 0;
+        let mut right_kept = 0;
+        let mut field_kept = 0;
+
+        for result in &results {
+            for det in &result.detections {
+                if det.in_end_zone {
+                    if result.suffix == "left" {
+                        left_kept += 1;
+                    } else if result.suffix == "right" {
+                        right_kept += 1;
+                    }
+                } else if det.in_field {
+                    field_kept += 1;
+                }
+            }
+        }
+
+        let detection_summary = DetectionSummary {
+            frame_id: frame.id,
+            overview_nms,
+            left_nms,
+            right_nms,
+            merge_nms: merge_nms_stat,
+            left_kept,
+            right_kept,
+            field_kept,
+        };
 
         if tx
             .send(DetectedFrame {
@@ -318,6 +345,7 @@ pub fn detection_worker(
                 com_delta_x: None,
                 com_delta_y: None,
                 std_dev_delta: None,
+                detection_summary: Some(detection_summary),
             })
             .is_err()
         {
@@ -371,17 +399,52 @@ fn transform_ez_to_overview(
     ov_w: f32,
     ov_h: f32,
 ) -> BBox {
+    tracing::trace!(
+        "Transform: EZ det [{:.1},{:.1},{:.1},{:.1}] → EZ bbox [{:.3},{:.3},{:.3},{:.3}] ({:.0}x{:.0}) → OV bbox [{:.3},{:.3},{:.3},{:.3}] ({:.0}x{:.0})",
+        det.x, det.y, det.w, det.h,
+        ez_bbox.x, ez_bbox.y, ez_bbox.w, ez_bbox.h, ez_w, ez_h,
+        ov_bbox.x, ov_bbox.y, ov_bbox.w, ov_bbox.h, ov_w, ov_h
+    );
+
     // EZ pixel → global normalized
     let global_x = ez_bbox.x + (det.x / ez_w) * ez_bbox.w;
     let global_y = ez_bbox.y + (det.y / ez_h) * ez_bbox.h;
     let global_w = (det.w / ez_w) * ez_bbox.w;
     let global_h = (det.h / ez_h) * ez_bbox.h;
 
+    tracing::trace!(
+        "Transform: Global normalized: [{:.3},{:.3},{:.3},{:.3}]",
+        global_x,
+        global_y,
+        global_w,
+        global_h
+    );
+
     // Global normalized → overview pixel
     let ov_x = ((global_x - ov_bbox.x) / ov_bbox.w) * ov_w;
     let ov_y = ((global_y - ov_bbox.y) / ov_bbox.h) * ov_h;
     let ov_det_w = (global_w / ov_bbox.w) * ov_w;
     let ov_det_h = (global_h / ov_bbox.h) * ov_h;
+
+    tracing::trace!(
+        "Transform: Overview pixel: [{:.1},{:.1},{:.1},{:.1}]",
+        ov_x,
+        ov_y,
+        ov_det_w,
+        ov_det_h
+    );
+
+    // Warn if the transformed bbox is outside the overview bounds
+    if ov_x < -10.0
+        || ov_y < -10.0
+        || ov_x + ov_det_w > ov_w + 10.0
+        || ov_y + ov_det_h > ov_h + 10.0
+    {
+        tracing::warn!(
+            "Transform: Resulting bbox [{:.1},{:.1},{:.1},{:.1}] is outside overview bounds [0,0,{:.0},{:.0}]",
+            ov_x, ov_y, ov_det_w, ov_det_h, ov_w, ov_h
+        );
+    }
 
     BBox {
         x: ov_x,
