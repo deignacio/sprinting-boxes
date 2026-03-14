@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "projects/sprinting-boxes",
+    "projects/vr180-metal",
 ]
 resolver = "2"

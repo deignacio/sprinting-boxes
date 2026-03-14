@@ -1,0 +1,17 @@
+[package]
+name = "vr180-metal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+ffmpeg-next = "8.0"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-metal = "0.3"
+objc2-core-video = "0.3"
+objc2-video-toolbox = "0.3"
+objc2-core-media = "0.3"
+indicatif = "0.18.4"

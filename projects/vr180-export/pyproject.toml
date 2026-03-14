@@ -1,0 +1,8 @@
+[project]
+name = "vr180-export"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "spatialmedia @ git+https://github.com/timminator/Spatial-Media-Metadata-Injector.git",
+    "numpy>=1.26",
+]
