@@ -2,5 +2,6 @@
 members = [
     "projects/sprinting-boxes",
     "projects/vr180-metal",
+    "projects/zero-copy-utils",
 ]
 resolver = "2"
