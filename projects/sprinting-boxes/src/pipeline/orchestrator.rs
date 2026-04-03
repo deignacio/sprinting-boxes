@@ -135,30 +135,31 @@ pub fn start_processing(
     };
 
     let sample_rate = run_context.sample_rate;
-    // Use a dummy reader just to get the total units, the actual workers create their own readers.
+    // Use a dummy reader to get total units.
+    // FfmpegReader always operates in keyframe-only mode, so its frame_count() returns the
+    // exact keyframe count from a pre-scan. We always probe it directly.
+    // For the opencv backend, we estimate from metadata when available (faster startup).
     let total_units = match mode {
-        crate::pipeline::types::PipelineMode::Pull => {
-            if run_context.duration_secs > 0.0 {
-                (run_context.duration_secs * sample_rate).round() as usize
-            } else {
-                // Fallback for legacy runs: probe video
-                let dummy_reader: Box<dyn crate::video::VideoReader> = match backend {
-                    "ffmpeg" => Box::new(crate::video::ffmpeg_reader::FfmpegReader::new(
-                        &source_path_str,
-                        sample_rate,
-                    )?),
-                    _ => Box::new(crate::video::opencv_reader::OpencvReader::new(
-                        &source_path_str,
-                        sample_rate,
-                    )?),
-                };
-                dummy_reader.frame_count()?
+        crate::pipeline::types::PipelineMode::Pull => match backend {
+            "ffmpeg" => {
+                let dummy = crate::video::ffmpeg_reader::FfmpegReader::new(
+                    &source_path_str,
+                    sample_rate,
+                )?;
+                dummy.frame_count()?
             }
-        }
+            _ => {
+                if run_context.duration_secs > 0.0 {
+                    (run_context.duration_secs * sample_rate).round() as usize
+                } else {
+                    crate::video::opencv_reader::OpencvReader::new(&source_path_str, sample_rate)?
+                        .frame_count()?
+                }
+            }
+        },
         crate::pipeline::types::PipelineMode::Field => {
-            let dummy_reader =
-                crate::video::image_reader::ImageDiskReader::new(&source_path_str, sample_rate)?;
-            dummy_reader.frame_count()?
+            crate::video::image_reader::ImageDiskReader::new(&source_path_str, sample_rate)?
+                .frame_count()?
         }
     };
 
@@ -182,9 +183,12 @@ pub fn start_processing(
     let slice_config = crate::pipeline::slicing::SliceConfig::new(640, 0.2);
 
     // Channels
+    // Single reader: the bottleneck is the crop/detect workers downstream, not decoding.
+    // Parallel readers would only help if reader throughput exceeded crop capacity, which
+    // requires faster local storage and a matching increase in crop worker count.
     let reader_workers_initial = 1;
     let (tx_v, rx_v) =
-        crossbeam::channel::bounded::<crate::pipeline::types::RawFrame>(reader_workers_initial * 2);
+        crossbeam::channel::bounded::<crate::pipeline::types::RawFrame>(reader_workers_initial * 4);
     let (tx_c, rx_c) = crossbeam::channel::bounded::<crate::pipeline::types::PreprocessedFrame>(32);
     let (tx_d, rx_d) = crossbeam::channel::bounded::<crate::pipeline::types::DetectedFrame>(8);
 
@@ -249,7 +253,6 @@ pub fn start_processing(
     // Spawn 1 & 2 conditionally
     match mode {
         crate::pipeline::types::PipelineMode::Pull => {
-            // Standard video reading and cropping
             spawn_reader_worker(state.clone(), reader_control.clone());
             spawn_crop_worker(state.clone(), crop_control.clone());
         }

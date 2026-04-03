@@ -27,15 +27,8 @@ pub fn read_worker(
     };
 
     loop {
-        // 1. Check if we should exit (orchestrator asked us to scale down or processing stopped)
+        // 1. Check if we should exit
         if !state.is_active.load(Ordering::Relaxed) {
-            break;
-        }
-
-        // Dynamic scaling check
-        let active = state.active_reader_workers.load(Ordering::Relaxed);
-        let target = control.target_count.load(Ordering::Relaxed);
-        if active > target {
             break;
         }
 
@@ -62,7 +55,8 @@ pub fn read_worker(
             let start_inst = std::time::Instant::now();
             match reader.read_unit(unit_id) {
                 Ok(mat) => {
-                    if tx.send(RawFrame { id: unit_id, mat }).is_err() {
+                    let timestamp_secs = reader.last_frame_timestamp_secs();
+                    if tx.send(RawFrame { id: unit_id, mat, timestamp_secs }).is_err() {
                         return Ok(()); // Receiver closed
                     }
                     let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
@@ -70,17 +64,27 @@ pub fn read_worker(
                     state.update_stage("reader", 1, duration_ms);
                 }
                 Err(e) => {
-                    // ROBUSTNESS: If we fail to read a unit, we MUST still send a frame
-                    // to preserve the ID sequence for the feature worker.
+                    let msg = e.to_string();
+                    if msg.contains("End of stream") {
+                        // Video exhausted before the estimated range was complete.
+                        // This is expected when the keyframe count estimate overshoots.
+                        tracing::info!(
+                            "Reader worker: EOF at unit {} — stopping cleanly",
+                            unit_id
+                        );
+                        return Ok(());
+                    }
+                    // ROBUSTNESS: For non-EOF errors, send an empty frame to preserve
+                    // the ID sequence for the feature worker.
                     tracing::error!("Reader worker: failed to read unit {}: {}", unit_id, e);
                     let empty_frame = RawFrame {
                         id: unit_id,
                         mat: opencv::core::Mat::default(),
+                        timestamp_secs: 0.0,
                     };
                     if tx.send(empty_frame).is_err() {
                         return Ok(());
                     }
-                    // Consider it "processed" but failed?
                     state.update_stage("reader", 1, 0.0);
                 }
             }

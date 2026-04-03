@@ -340,6 +340,8 @@ impl ReaderControl {
 pub struct RawFrame {
     pub id: usize,
     pub mat: Mat,
+    /// Source timestamp in seconds (exact for FfmpegReader keyframe mode; 0.0 for other readers).
+    pub timestamp_secs: f64,
 }
 
 /// Data for a single cropped region

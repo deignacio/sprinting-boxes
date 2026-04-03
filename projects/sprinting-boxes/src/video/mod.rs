@@ -13,6 +13,11 @@ pub trait VideoReader: Send {
     fn read_frame(&mut self) -> Result<Mat>;
     fn source_fps(&self) -> Result<f64>;
     fn seek_to_frame(&mut self, frame_num: usize) -> Result<()>;
+    /// Returns the source timestamp (seconds) of the last frame returned by read_frame/read_unit.
+    /// Defaults to 0.0 for readers that do not track timestamps.
+    fn last_frame_timestamp_secs(&self) -> f64 {
+        0.0
+    }
 }
 
 /// Map a sampled unit index to its absolute raw frame index in the video.
