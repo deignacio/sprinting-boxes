@@ -35,3 +35,11 @@ csv = "1.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "ort-download-binaries", "github", "image-default-formats", "coreml", "hf-hub"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }
+objc2-core-ml = { version = "0.3", features = ["MLModel", "MLFeatureValue", "MLDictionaryFeatureProvider", "MLMultiArray"] }
+objc2-core-video = "0.3"
+metal = "0.29"
+
+[build-dependencies]
+cc = "1.0"

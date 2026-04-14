@@ -1,10 +1,17 @@
-//! This build script automates the frontend build process.
+//! This build script automates the frontend build process and macOS CoreML compilation.
 //! It detects changes in the `sb-dashboard` directory and triggers `npm install` and `npm run build`
 //! to ensure the frontend assets are up-to-date and available for embedding in the Rust binary.
+//!
+//! On macOS, it also compiles Objective-C CoreML helper functions.
 
 use std::process::Command;
 
 fn main() {
+    // Compile Objective-C helpers on macOS
+    #[cfg(target_os = "macos")]
+    compile_coreml_helpers();
+
+
     println!("cargo:rerun-if-changed=../sb-dashboard/package.json");
     println!("cargo:rerun-if-changed=../sb-dashboard/package-lock.json");
     println!("cargo:rerun-if-changed=../sb-dashboard/src");
@@ -48,4 +55,23 @@ fn main() {
     } else {
         println!("cargo:warning=Failed to execute npm run build");
     }
+}
+
+#[cfg(target_os = "macos")]
+fn compile_coreml_helpers() {
+    // Compile CoreMLHelper.m Objective-C source
+    cc::Build::new()
+        .file("src/detection/CoreMLHelper.m")
+        .flag("-fobjc-arc") // Enable Automatic Reference Counting
+        .flag("-fmodules") // Enable Clang modules
+        .compile("coreml_helper");
+
+    // Link required frameworks
+    println!("cargo:rustc-link-framework=CoreML");
+    println!("cargo:rustc-link-framework=CoreVideo");
+    println!("cargo:rustc-link-framework=Foundation");
+
+    // Recompile if the helper files change
+    println!("cargo:rerun-if-changed=src/detection/CoreMLHelper.h");
+    println!("cargo:rerun-if-changed=src/detection/CoreMLHelper.m");
 }
