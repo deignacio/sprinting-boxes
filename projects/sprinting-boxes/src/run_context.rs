@@ -190,8 +190,8 @@ impl RunContext {
 
         // Left Endzone (Effective)
         let left_buffer_dist =
-            crate::pipeline::geometry::compute_buffer_distance(&left_global, BUFFER_PCT);
-        let left_effective = crate::pipeline::geometry::compute_effective_endzone_polygon(
+            crate::geometry::compute_buffer_distance(&left_global, BUFFER_PCT);
+        let left_effective = crate::geometry::compute_effective_endzone_polygon(
             &left_global,
             &field_global,
             left_buffer_dist,
@@ -199,8 +199,8 @@ impl RunContext {
 
         // Right Endzone (Effective)
         let right_buffer_dist =
-            crate::pipeline::geometry::compute_buffer_distance(&right_global, BUFFER_PCT);
-        let right_effective = crate::pipeline::geometry::compute_effective_endzone_polygon(
+            crate::geometry::compute_buffer_distance(&right_global, BUFFER_PCT);
+        let right_effective = crate::geometry::compute_effective_endzone_polygon(
             &right_global,
             &field_global,
             right_buffer_dist,
@@ -213,16 +213,16 @@ impl RunContext {
         all_points.extend_from_slice(&field_global);
 
         let overview_bbox =
-            crate::pipeline::geometry::compute_bbox_with_crop_padding(&all_points, CROP_PADDING)
+            crate::geometry::compute_bbox_with_crop_padding(&all_points, CROP_PADDING)
                 .ok_or_else(|| anyhow::anyhow!("Failed to compute overview bbox"))?;
 
         // Compute per-endzone crop bboxes for high-resolution detection
-        let left_ez_bbox = crate::pipeline::geometry::compute_bbox_with_crop_padding(
+        let left_ez_bbox = crate::geometry::compute_bbox_with_crop_padding(
             &left_effective,
             CROP_PADDING,
         )
         .ok_or_else(|| anyhow::anyhow!("Failed to compute left EZ bbox"))?;
-        let right_ez_bbox = crate::pipeline::geometry::compute_bbox_with_crop_padding(
+        let right_ez_bbox = crate::geometry::compute_bbox_with_crop_padding(
             &right_effective,
             CROP_PADDING,
         )

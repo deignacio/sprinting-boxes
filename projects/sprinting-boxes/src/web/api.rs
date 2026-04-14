@@ -382,7 +382,6 @@ pub async fn start_processing_handler(
     match crate::pipeline::orchestrator::start_processing(
         &run_context,
         video_root,
-        &args.model_path,
         &backend,
         mode,
     ) {

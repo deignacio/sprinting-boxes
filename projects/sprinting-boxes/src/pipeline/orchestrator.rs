@@ -24,11 +24,10 @@ pub struct DetectionControl {
     pub source_rx: crossbeam::channel::Receiver<crate::pipeline::types::PreprocessedFrame>,
     pub result_tx:
         Arc<RwLock<Option<crossbeam::channel::Sender<crate::pipeline::types::DetectedFrame>>>>,
-    pub model_path: String,
     pub min_conf: f32,
-    pub slice_conf: crate::pipeline::slicing::SliceConfig,
+    pub slice_conf: crate::detection::slicing::SliceConfig,
     pub target_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    pub regions_to_detect: Option<Vec<String>>, // NEW: target suffixes to detect (e.g. ["left", "right"])
+    pub regions_to_detect: Option<Vec<String>>,
 }
 
 impl DetectionControl {
@@ -96,17 +95,30 @@ fn unregister_pipeline(run_id: &str) {
 pub fn start_processing(
     run_context: &RunContext,
     video_root: &Path,
-    model_path: &str,
     backend: &str,
     mode: crate::pipeline::types::PipelineMode,
 ) -> Result<Arc<ProcessingState>> {
     let video_path = run_context.resolve_video_path(video_root);
 
-    // Check if already processing
-    if let Some(state) = get_processing_state(&run_context.run_id) {
-        if state.is_active.load(Ordering::Relaxed) {
-            anyhow::bail!("Run {} is already being processed", run_context.run_id);
+    // Check if already processing or if a previous run is still cleaning up.
+    // Wait up to 2 seconds for the old supervisor to finish unregistering.
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(state) = get_processing_state(&run_context.run_id) {
+            if state.is_active.load(Ordering::Relaxed) {
+                anyhow::bail!("Run {} is already being processed", run_context.run_id);
+            }
+            // If not active but not complete, supervisor is still running
+            if !state.is_complete.load(Ordering::Relaxed) {
+                if start.elapsed().as_secs() > 2 {
+                    anyhow::bail!("Run {} is still cleaning up. Process may be hung.", run_context.run_id);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
         }
+        // Pipeline is either completely unregistered or finished and complete
+        break;
     }
 
     // Load crop configs
@@ -180,7 +192,7 @@ pub fn start_processing(
 
     // Detection config (use function argument)
     let min_conf = 0.5;
-    let slice_config = crate::pipeline::slicing::SliceConfig::new(640, 0.2);
+    let slice_config = crate::detection::slicing::SliceConfig::new(640, 0.2);
 
     // Channels
     // Single reader: the bottleneck is the crop/detect workers downstream, not decoding.
@@ -226,7 +238,6 @@ pub fn start_processing(
     let detect_control = Arc::new(DetectionControl {
         source_rx: rx_c.clone(),
         result_tx: Arc::new(RwLock::new(Some(tx_d))),
-        model_path: model_path.to_string(),
         min_conf,
         slice_conf: slice_config,
         target_count: target_detect.clone(),
@@ -422,7 +433,6 @@ fn spawn_detection_worker(state: Arc<ProcessingState>, control: Arc<DetectionCon
     state.active_detect_workers.fetch_add(1, Ordering::Relaxed);
     thread::spawn(move || {
         let params = crate::pipeline::detection_worker::DetectionParams {
-            model_path: control.model_path.clone(),
             min_conf: control.min_conf,
             slice_config: control.slice_conf.clone(),
             regions_to_detect: control.regions_to_detect.clone(),
@@ -523,9 +533,13 @@ pub fn scale_workers(run_id: &str, stage: &str, delta: i32) -> Option<usize> {
 }
 
 /// Stop processing a run
+/// Sets is_active=false to signal workers and closes the detection input channel
+/// to force detection workers to exit their read loops immediately.
 pub fn stop_processing(run_id: &str) -> bool {
-    if let Some(state) = get_processing_state(run_id) {
-        state.is_active.store(false, Ordering::Relaxed);
+    if let Some(manager) = get_pipeline_manager(run_id) {
+        manager.state.is_active.store(false, Ordering::Relaxed);
+        // Close the detection input channel to unblock detection workers
+        manager.crop_control.close_tx();
         true
     } else {
         false
@@ -535,7 +549,7 @@ pub fn stop_processing(run_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::slicing::SliceConfig;
+    use crate::detection::slicing::SliceConfig;
     use crate::pipeline::types::ProcessingState;
     use crossbeam::channel;
     use std::sync::atomic::Ordering;
@@ -567,9 +581,8 @@ mod tests {
         let detect_control = Arc::new(DetectionControl {
             source_rx: rx_c,
             result_tx: Arc::new(RwLock::new(Some(tx_d))),
-            model_path: "mock_model".to_string(),
             min_conf: 0.5,
-            slice_conf: SliceConfig::new(640, 0.2),
+            slice_conf: SliceConfig::new(416, 0.2),
             target_count: target_detect.clone(),
             regions_to_detect: None,
         });

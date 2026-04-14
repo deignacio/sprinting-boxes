@@ -1,7 +1,8 @@
-use crate::pipeline::detection::ObjectDetector;
-use crate::pipeline::slicing::{
-    generate_tiles, nms, transform_detection_to_image_coords, HbbWrapper, SliceConfig,
+use crate::detection;
+use crate::detection::slicing::{
+    generate_tiles, nms, HbbWrapper, SliceConfig,
 };
+use crate::geometry::transform_ez_to_overview;
 use crate::pipeline::types::{
     BBox, CropResult, DetectedFrame, DetectionSummary, EnrichedDetection, PreprocessedFrame,
     ProcessingState,
@@ -11,10 +12,10 @@ use crossbeam::channel::{Receiver, Sender};
 use opencv::prelude::MatTraitConst;
 use std::sync::Arc;
 use std::time::Instant;
+use usls::Hbb;
 
 /// Parameters for the detection worker to avoid too many arguments clippy warning.
 pub struct DetectionParams {
-    pub model_path: String,
     pub min_conf: f32,
     pub slice_config: SliceConfig,
     pub regions_to_detect: Option<Vec<String>>,
@@ -27,16 +28,21 @@ pub fn detection_worker(
     state: Arc<ProcessingState>,
     target_count: Arc<std::sync::atomic::AtomicUsize>,
 ) -> Result<()> {
-    // Load Yolo model
-    let mut detector = ObjectDetector::new(&params.model_path)
-        .map_err(|e| anyhow::anyhow!("Failed to load model: {}", e))?;
+    // Create the appropriate detector (CoreML on macOS, ONNX fallback on other platforms)
+    let detector = detection::create_detector()?;
+
     let slicing_enabled = params.slice_config.is_enabled();
     tracing::info!(
-        "Detection worker started with slice_config: {:?}",
+        "Detection worker started with CoreML GPU pipeline and slice_config: {:?}",
         params.slice_config
     );
 
     for frame in rx {
+        // Exit immediately if stop_processing was called (feature and finalize workers do the same)
+        if !state.is_active.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+
         // Handle empty/failed frames from upstream by passing through
         if frame.crops.is_empty() {
             tracing::warn!("Detection worker: passing through empty frame {}", frame.id);
@@ -52,7 +58,7 @@ pub fn detection_worker(
         // 1. Tile Generation Phase: Collect tiles from all crops
         struct QueuedTile {
             crop_index: usize,
-            tile: crate::pipeline::slicing::Tile,
+            tile: crate::detection::slicing::Tile,
         }
         let mut all_queued_tiles = Vec::new();
 
@@ -101,7 +107,7 @@ pub fn detection_worker(
                 // Standard detection: one "fake" tile covering the whole image
                 all_queued_tiles.push(QueuedTile {
                     crop_index,
-                    tile: crate::pipeline::slicing::Tile {
+                    tile: crate::detection::slicing::Tile {
                         image: crop.image.clone(),
                         x_offset: 0,
                         y_offset: 0,
@@ -118,28 +124,39 @@ pub fn detection_worker(
             frame.id
         );
 
-        // 2. Inference Phase: Batch detect all collected tiles
+        // 2. Inference Phase: Run detector on all tiles
         let mut detections_by_crop = vec![Vec::new(); frame.crops.len()];
         if !all_queued_tiles.is_empty() {
-            let tile_images: Vec<opencv::core::Mat> = all_queued_tiles
-                .iter()
-                .map(|t| t.tile.image.clone())
-                .collect();
-            let chunk_size = safe_chunk_size(all_queued_tiles.len());
-            let batch_results = detector.detect_batch(&tile_images, chunk_size)?;
+            for queued in all_queued_tiles.into_iter() {
+                let detections = detector.detect(&queued.tile.image)?;
 
-            for (queued, detections) in all_queued_tiles.into_iter().zip(batch_results) {
                 for det in detections {
-                    if det.confidence().unwrap_or(0.0) < params.min_conf {
-                        continue;
-                    }
-                    if det.name().unwrap_or("") != "person" {
+                    if det.confidence < params.min_conf {
                         continue;
                     }
 
-                    // Transform detection back to crop pixel coordinates
-                    let transformed = transform_detection_to_image_coords(&det, &queued.tile);
-                    detections_by_crop[queued.crop_index].push(transformed);
+                    // Detections are in normalized coordinates [0,1] relative to the model input size.
+                    // D-FINE model expects 640x640 input. Map coordinates back to crop pixel space.
+                    // ASSUMPTION: If the model is changed to a different input size, these
+                    // calculations must be updated accordingly.
+                    const MODEL_SIZE: f32 = 640.0;
+
+                    let x1 = det.x_min * MODEL_SIZE + queued.tile.x_offset as f32;
+                    let y1 = det.y_min * MODEL_SIZE + queued.tile.y_offset as f32;
+                    let x2 = det.x_max * MODEL_SIZE + queued.tile.x_offset as f32;
+                    let y2 = det.y_max * MODEL_SIZE + queued.tile.y_offset as f32;
+
+                    // Create usls::Hbb with detection info for downstream processing
+                    let mut hbb = Hbb::default().with_xyxy(x1, y1, x2, y2).with_confidence(det.confidence);
+
+                    if let Some(class_id) = det.class_id {
+                        hbb = hbb.with_id(class_id as usize);
+                    }
+                    if let Some(class_name) = &det.class_name {
+                        hbb = hbb.with_name(class_name.as_str());
+                    }
+
+                    detections_by_crop[queued.crop_index].push(hbb);
                 }
             }
         }
@@ -364,156 +381,4 @@ pub fn detection_worker(
     }
 
     Ok(())
-}
-
-/// Compute a safe chunk size for CoreML batch inference.
-/// CoreML's BNNSFilterApplyTwoInputBatch has a dtype bug that triggers
-/// when processing full batches of 8. Using at most 7 per chunk ensures
-/// the batch is always "partial" and avoids the buggy code path.
-fn safe_chunk_size(n_tiles: usize) -> usize {
-    if n_tiles <= 7 {
-        // Few enough tiles that we can process them all at once
-        // without ever filling a batch of 8
-        n_tiles
-    } else {
-        // More than 7 tiles: use chunks of 7 to stay safe
-        7
-    }
-}
-
-/// Transform a bounding box from end-zone crop pixel coordinates to overview crop pixel coordinates.
-///
-/// The transform goes: EZ pixel → global normalized → overview pixel.
-///
-/// - `det`: bounding box in EZ crop pixel coordinates
-/// - `ez_bbox`: the EZ crop's bounding box in normalized global coordinates
-/// - `ez_w`, `ez_h`: EZ crop image dimensions in pixels
-/// - `ov_bbox`: the overview crop's bounding box in normalized global coordinates
-/// - `ov_w`, `ov_h`: overview crop image dimensions in pixels
-fn transform_ez_to_overview(
-    det: &BBox,
-    ez_bbox: &BBox,
-    ez_w: f32,
-    ez_h: f32,
-    ov_bbox: &BBox,
-    ov_w: f32,
-    ov_h: f32,
-) -> BBox {
-    tracing::trace!(
-        "Transform: EZ det [{:.1},{:.1},{:.1},{:.1}] → EZ bbox [{:.3},{:.3},{:.3},{:.3}] ({:.0}x{:.0}) → OV bbox [{:.3},{:.3},{:.3},{:.3}] ({:.0}x{:.0})",
-        det.x, det.y, det.w, det.h,
-        ez_bbox.x, ez_bbox.y, ez_bbox.w, ez_bbox.h, ez_w, ez_h,
-        ov_bbox.x, ov_bbox.y, ov_bbox.w, ov_bbox.h, ov_w, ov_h
-    );
-
-    // EZ pixel → global normalized
-    let global_x = ez_bbox.x + (det.x / ez_w) * ez_bbox.w;
-    let global_y = ez_bbox.y + (det.y / ez_h) * ez_bbox.h;
-    let global_w = (det.w / ez_w) * ez_bbox.w;
-    let global_h = (det.h / ez_h) * ez_bbox.h;
-
-    tracing::trace!(
-        "Transform: Global normalized: [{:.3},{:.3},{:.3},{:.3}]",
-        global_x,
-        global_y,
-        global_w,
-        global_h
-    );
-
-    // Global normalized → overview pixel
-    let ov_x = ((global_x - ov_bbox.x) / ov_bbox.w) * ov_w;
-    let ov_y = ((global_y - ov_bbox.y) / ov_bbox.h) * ov_h;
-    let ov_det_w = (global_w / ov_bbox.w) * ov_w;
-    let ov_det_h = (global_h / ov_bbox.h) * ov_h;
-
-    tracing::trace!(
-        "Transform: Overview pixel: [{:.1},{:.1},{:.1},{:.1}]",
-        ov_x,
-        ov_y,
-        ov_det_w,
-        ov_det_h
-    );
-
-    // Warn if the transformed bbox is outside the overview bounds
-    if ov_x < -10.0
-        || ov_y < -10.0
-        || ov_x + ov_det_w > ov_w + 10.0
-        || ov_y + ov_det_h > ov_h + 10.0
-    {
-        tracing::warn!(
-            "Transform: Resulting bbox [{:.1},{:.1},{:.1},{:.1}] is outside overview bounds [0,0,{:.0},{:.0}]",
-            ov_x, ov_y, ov_det_w, ov_det_h, ov_w, ov_h
-        );
-    }
-
-    BBox {
-        x: ov_x,
-        y: ov_y,
-        w: ov_det_w,
-        h: ov_det_h,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_transform_ez_to_overview_identity() {
-        // When EZ crop bbox == overview crop bbox, transform is identity
-        let det = BBox {
-            x: 100.0,
-            y: 50.0,
-            w: 40.0,
-            h: 60.0,
-        };
-        let bbox = BBox {
-            x: 0.1,
-            y: 0.1,
-            w: 0.8,
-            h: 0.8,
-        };
-        let result = transform_ez_to_overview(&det, &bbox, 640.0, 480.0, &bbox, 640.0, 480.0);
-        assert!((result.x - det.x).abs() < 0.01);
-        assert!((result.y - det.y).abs() < 0.01);
-        assert!((result.w - det.w).abs() < 0.01);
-        assert!((result.h - det.h).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_transform_ez_to_overview_left_crop() {
-        // Left EZ crop covers the left third of the overview
-        // Overview: x=0.0, y=0.0, w=1.0, h=0.5 → 1920x960 pixels
-        // Left EZ: x=0.0, y=0.0, w=0.33, h=0.5 → 640x960 pixels
-        let ov_bbox = BBox {
-            x: 0.0,
-            y: 0.0,
-            w: 1.0,
-            h: 0.5,
-        };
-        let ez_bbox = BBox {
-            x: 0.0,
-            y: 0.0,
-            w: 0.33,
-            h: 0.5,
-        };
-
-        // Detection at center of EZ crop: (320, 480) in EZ pixels
-        let det = BBox {
-            x: 300.0,
-            y: 460.0,
-            w: 40.0,
-            h: 40.0,
-        };
-
-        let result =
-            transform_ez_to_overview(&det, &ez_bbox, 640.0, 960.0, &ov_bbox, 1920.0, 960.0);
-
-        // (300/640)*0.33 = 0.1546875 global x → (0.1546875/1.0)*1920 = 297.0 overview px
-        assert!((result.x - 297.0).abs() < 1.0, "x: {}", result.x);
-        // y: (460/960)*0.5 = 0.2395833 global → (0.2395833/0.5)*960 = 460 overview px
-        assert!((result.y - 460.0).abs() < 1.0, "y: {}", result.y);
-        // w: (40/640)*0.33 = 0.020625 global → (0.020625/1.0)*1920 = 39.6 overview px
-        assert!((result.w - 39.6).abs() < 1.0, "w: {}", result.w);
-    }
 }

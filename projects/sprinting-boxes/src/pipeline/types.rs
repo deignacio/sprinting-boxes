@@ -8,6 +8,12 @@ use std::sync::RwLock;
 
 pub use crate::run_artifacts::{BBox, Point};
 
+/// Frame data wrapper for CPU processing
+/// Currently holds only Mat; CVPixelBuffer conversion happens locally in detection_worker
+pub enum FrameData {
+    Mat(Mat),
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineMode {
@@ -339,9 +345,7 @@ impl ReaderControl {
 /// A raw frame read from the video source
 pub struct RawFrame {
     pub id: usize,
-    pub mat: Mat,
-    /// Source timestamp in seconds (exact for FfmpegReader keyframe mode; 0.0 for other readers).
-    pub timestamp_secs: f64,
+    pub data: FrameData,
 }
 
 /// Data for a single cropped region

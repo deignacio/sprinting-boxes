@@ -28,7 +28,7 @@ dist/
 .prettierapi
 
 # input/output data
-data/
+/data/
 
 # static opencv
 vendor/
