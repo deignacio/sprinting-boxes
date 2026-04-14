@@ -1,7 +1,10 @@
 mod cli;
+mod detection;
+mod geometry;
 mod pipeline;
 mod run_artifacts;
 mod run_context;
+mod scoring;
 mod video;
 mod web;
 

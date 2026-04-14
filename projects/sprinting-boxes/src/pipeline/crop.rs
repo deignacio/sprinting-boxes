@@ -1,5 +1,5 @@
 use crate::pipeline::types::{
-    BBox, CropConfig, CropData, PreprocessedFrame, ProcessingState, RawFrame, RegionalPolygon,
+    BBox, CropConfig, CropData, PreprocessedFrame, ProcessingState, RawFrame, RegionalPolygon, FrameData,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -108,9 +108,14 @@ pub fn crop_worker(
         let start_inst = Instant::now();
         let mut crop_data_list = Vec::with_capacity(configs.len());
 
-        if !frame.mat.empty() {
+        // Extract Mat from FrameData
+        let mat = match &frame.data {
+            FrameData::Mat(m) => m,
+        };
+
+        if !mat.empty() {
             for config in configs.iter() {
-                let mut crop = crop_normalized(&frame.mat, &config.bbox)?;
+                let mut crop = crop_normalized(mat, &config.bbox)?;
 
                 let crop_size = crop.size()?;
                 let crop_w = crop_size.width as f32;
@@ -120,13 +125,13 @@ pub fn crop_worker(
                     crop = enhance_crop(&crop)?;
                 }
 
-                let original_poly_local = crate::pipeline::geometry::transform_polygon(
+                let original_poly_local = crate::geometry::transform_polygon(
                     &config.original_polygon,
                     &config.bbox,
                     crop_w,
                     crop_h,
                 );
-                let effective_poly_local = crate::pipeline::geometry::transform_polygon(
+                let effective_poly_local = crate::geometry::transform_polygon(
                     &config.effective_polygon,
                     &config.bbox,
                     crop_w,
@@ -138,13 +143,13 @@ pub fn crop_worker(
                     .iter()
                     .map(|r| RegionalPolygon {
                         name: r.name.clone(),
-                        polygon: crate::pipeline::geometry::transform_polygon(
+                        polygon: crate::geometry::transform_polygon(
                             &r.polygon,
                             &config.bbox,
                             crop_w,
                             crop_h,
                         ),
-                        effective_polygon: crate::pipeline::geometry::transform_polygon(
+                        effective_polygon: crate::geometry::transform_polygon(
                             &r.effective_polygon,
                             &config.bbox,
                             crop_w,
