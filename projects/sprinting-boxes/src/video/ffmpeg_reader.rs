@@ -2,11 +2,29 @@ use super::VideoReader;
 use anyhow::{anyhow, Context, Result};
 use opencv::{core, prelude::*};
 use std::path::Path;
+use std::sync::Once;
 
 // Re-export the raw FFI types we need
 use ffmpeg_next::ffi;
 // Required to use as_ptr/as_mut_ptr on ffmpeg_next packet and frame types
 use ffmpeg_next::packet::Ref as PacketRef;
+
+// Initialize FFmpeg exactly once, globally
+static FFMPEG_INIT: Once = Once::new();
+
+/// Ensure FFmpeg is initialized (safe to call multiple times).
+fn init_ffmpeg() -> Result<()> {
+    let mut result = Ok(());
+    FFMPEG_INIT.call_once(|| {
+        match ffmpeg_next::init() {
+            Ok(_) => {},
+            Err(e) => {
+                result = Err(anyhow::anyhow!("Failed to initialize FFmpeg: {}", e));
+            }
+        }
+    });
+    result
+}
 
 // ---------------------------------------------------------------------------
 // HwDeviceCtx — RAII wrapper for AVBufferRef* (hardware device context)
@@ -79,8 +97,6 @@ pub struct FfmpegReader {
     keyframe_pts: Vec<i64>,
     /// Stream time_base as a float (num/den) for converting PTS to seconds.
     stream_time_base: f64,
-    /// Timestamp (seconds) of the last frame returned by read_frame().
-    last_timestamp_secs: f64,
     /// Keyframe index of the next frame to be decoded (0 = first keyframe).
     frames_decoded: usize,
     // Hardware acceleration state
@@ -101,7 +117,7 @@ unsafe impl Send for FfmpegReader {}
 
 impl FfmpegReader {
     pub fn new(path: &str, _sample_rate: f64) -> Result<Self> {
-        ffmpeg_next::init().context("Failed to initialize FFmpeg")?;
+        init_ffmpeg()?;
 
         let source = Path::new(path);
         if !source.exists() {
@@ -201,7 +217,6 @@ impl FfmpegReader {
             total_keyframes: 0,
             keyframe_pts: Vec::new(),
             stream_time_base,
-            last_timestamp_secs: 0.0,
             frames_decoded: 0,
             _hw_device_ctx: hw_device_ctx,
             hw_pix_fmt,
@@ -387,13 +402,29 @@ impl FfmpegReader {
                             ((*self.reuse_packet.as_ptr()).flags & ffi::AV_PKT_FLAG_KEY as i32) != 0
                         };
                         if !is_key {
+                            // CRITICAL: Unref packet buffer before continuing to avoid av_malloc leak
+                            // Each read() allocates a buffer; skipped packets must be freed
+                            unsafe {
+                                ffi::av_packet_unref(self.reuse_packet.as_ptr() as *mut _);
+                            }
                             continue;
                         }
                         self.decoder
                             .send_packet(&self.reuse_packet)
                             .context("Failed to send packet to decoder")?;
+                        // Unref the packet after sending — avcodec_send_packet makes its own copy,
+                        // so the caller must still unref to avoid av_malloc leak
+                        unsafe {
+                            ffi::av_packet_unref(self.reuse_packet.as_ptr() as *mut _);
+                        }
                         found_packet = true;
                         break;
+                    } else {
+                        // Non-video stream packet (audio, subtitles, etc.) — must unref to avoid leak
+                        // Each read() allocates a buffer; unused packets must be freed
+                        unsafe {
+                            ffi::av_packet_unref(self.reuse_packet.as_ptr() as *mut _);
+                        }
                     }
                 }
 
@@ -552,18 +583,10 @@ impl VideoReader for FfmpegReader {
 
     fn read_frame(&mut self) -> Result<core::Mat> {
         let raw_frame = self.receive_next_raw_owned()?;
-        // Capture PTS before frame is consumed by processing
-        if let Some(pts) = raw_frame.pts() {
-            self.last_timestamp_secs = pts as f64 * self.stream_time_base;
-        }
         let processed_frame = self.process_decoded_frame(raw_frame)?;
         let bgr_mat = bgr_frame_to_mat(&processed_frame)?;
         self.frames_decoded += 1;
         Ok(bgr_mat)
-    }
-
-    fn last_frame_timestamp_secs(&self) -> f64 {
-        self.last_timestamp_secs
     }
 }
 

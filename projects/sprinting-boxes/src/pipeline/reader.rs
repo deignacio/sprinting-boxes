@@ -1,6 +1,6 @@
 // Reader worker: extracts frames from video and sends them through a channel
 
-use crate::pipeline::types::RawFrame;
+use crate::pipeline::types::{RawFrame, FrameData};
 use crate::video::VideoReader;
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
@@ -55,8 +55,10 @@ pub fn read_worker(
             let start_inst = std::time::Instant::now();
             match reader.read_unit(unit_id) {
                 Ok(mat) => {
-                    let timestamp_secs = reader.last_frame_timestamp_secs();
-                    if tx.send(RawFrame { id: unit_id, mat, timestamp_secs }).is_err() {
+                    if tx.send(RawFrame {
+                        id: unit_id,
+                        data: FrameData::Mat(mat),
+                    }).is_err() {
                         return Ok(()); // Receiver closed
                     }
                     let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
@@ -79,8 +81,7 @@ pub fn read_worker(
                     tracing::error!("Reader worker: failed to read unit {}: {}", unit_id, e);
                     let empty_frame = RawFrame {
                         id: unit_id,
-                        mat: opencv::core::Mat::default(),
-                        timestamp_secs: 0.0,
+                        data: FrameData::Mat(opencv::core::Mat::default()),
                     };
                     if tx.send(empty_frame).is_err() {
                         return Ok(());

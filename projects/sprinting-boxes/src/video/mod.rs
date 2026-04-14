@@ -1,5 +1,6 @@
 pub mod calibration;
 pub mod ffmpeg_reader;
+pub mod image_processor;
 pub mod image_reader;
 pub mod opencv_reader;
 pub mod processor;
@@ -13,20 +14,17 @@ pub trait VideoReader: Send {
     fn read_frame(&mut self) -> Result<Mat>;
     fn source_fps(&self) -> Result<f64>;
     fn seek_to_frame(&mut self, frame_num: usize) -> Result<()>;
-    /// Returns the source timestamp (seconds) of the last frame returned by read_frame/read_unit.
-    /// Defaults to 0.0 for readers that do not track timestamps.
-    fn last_frame_timestamp_secs(&self) -> f64 {
-        0.0
-    }
 }
 
 /// Map a sampled unit index to its absolute raw frame index in the video.
 /// This uses floating-point math to ensure zero cumulative drift.
+#[cfg(test)]
 pub fn unit_to_frame(unit_id: usize, source_fps: f64, sample_rate: f64) -> usize {
     (unit_id as f64 * source_fps / sample_rate).round() as usize
 }
 
 /// Map a sampled unit index to its absolute time in seconds.
+#[cfg(test)]
 pub fn unit_to_secs(unit_id: usize, sample_rate: f64) -> f64 {
     unit_id as f64 / sample_rate
 }
