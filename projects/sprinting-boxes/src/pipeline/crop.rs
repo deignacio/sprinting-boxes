@@ -1,5 +1,6 @@
 use crate::pipeline::types::{
-    BBox, CropConfig, CropData, PreprocessedFrame, ProcessingState, RawFrame, RegionalPolygon, FrameData,
+    BBox, CropConfig, CropData, FrameData, PreprocessedFrame, ProcessingState, RawFrame,
+    RegionalPolygon,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -109,9 +110,7 @@ pub fn crop_worker(
         let mut crop_data_list = Vec::with_capacity(configs.len());
 
         // Extract Mat from FrameData
-        let mat = match &frame.data {
-            FrameData::Mat(m) => m,
-        };
+        let FrameData::Mat(mat) = &frame.data;
 
         if !mat.empty() {
             for config in configs.iter() {

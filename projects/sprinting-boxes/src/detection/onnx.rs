@@ -41,7 +41,10 @@ impl Detector for OnnxDetector {
         let usls_image = Image::from(dynamic_image);
 
         // USLS requires batch processing; we wrap single tile in a batch of 1
-        let mut model = self.model.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+        let mut model = self
+            .model
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
         let results = model.forward(&[usls_image])?;
 
         if results.is_empty() {
@@ -70,7 +73,7 @@ impl Detector for OnnxDetector {
                     x_max,
                     y_max,
                     confidence: hbb.confidence().unwrap_or(0.0),
-                    class_id: hbb.id().map(|id| id as usize),
+                    class_id: hbb.id(),
                     class_name: hbb.name().map(|s| s.to_string()),
                 }
             })

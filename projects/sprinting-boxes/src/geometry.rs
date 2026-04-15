@@ -1,5 +1,5 @@
-use crate::run_artifacts::{BBox, Point};
 use crate::pipeline::types::BBox as PipelineBBox;
+use crate::run_artifacts::{BBox, Point};
 use geo::BooleanOps;
 use geo::Contains;
 use geo_buffer::buffer_polygon;

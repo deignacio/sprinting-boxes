@@ -1,15 +1,14 @@
 //! CoreML-based object detector for macOS (zero-copy GPU pipeline).
-#![cfg(target_os = "macos")]
 
 use anyhow::Result;
 use objc2::rc::autoreleasepool;
+use objc2_core_ml::{MLComputeUnits, MLModel, MLModelConfiguration};
 use objc2_foundation::{NSString, NSURL};
-use objc2_core_ml::{MLModel, MLModelConfiguration, MLComputeUnits};
 use opencv::core::Mat;
 use opencv::prelude::MatTraitConst;
 
-use crate::detection::{Detection, Detector};
 use crate::detection::ffi;
+use crate::detection::{Detection, Detector};
 
 pub struct CoremlDetector {
     model: objc2::rc::Retained<MLModel>,
@@ -49,11 +48,10 @@ impl CoremlDetector {
             };
 
             let model = unsafe {
-                MLModel::modelWithContentsOfURL_configuration_error(
-                    compiled_url.as_ref(),
-                    &config,
-                )
-                .map_err(|err| anyhow::anyhow!("Failed to load compiled CoreML model: {:?}", err))?
+                MLModel::modelWithContentsOfURL_configuration_error(compiled_url.as_ref(), &config)
+                    .map_err(|err| {
+                        anyhow::anyhow!("Failed to load compiled CoreML model: {:?}", err)
+                    })?
             };
 
             Ok::<_, anyhow::Error>(CoremlDetector { model })
@@ -73,7 +71,8 @@ impl Detector for CoremlDetector {
 
         // Extract both outputs in a single FFI call without holding ObjC object references
         // across the boundary. This keeps only Rust-owned Vec<f32> data in Rust land.
-        let (confidence_data, coordinates_data) = unsafe { ffi::run_prediction_and_extract(&self.model, &*provider)? };
+        let (confidence_data, coordinates_data) =
+            unsafe { ffi::run_prediction_and_extract(&self.model, &provider)? };
 
         // Drop ObjC objects immediately
         drop(provider);
@@ -106,10 +105,10 @@ impl Detector for CoremlDetector {
 
             // cxcywh → xyxy (normalized [0,1])
             let box_start = det_idx * 4;
-            let cx = coordinates_data[box_start] as f32;
-            let cy = coordinates_data[box_start + 1] as f32;
-            let w = coordinates_data[box_start + 2] as f32;
-            let h = coordinates_data[box_start + 3] as f32;
+            let cx = coordinates_data[box_start];
+            let cy = coordinates_data[box_start + 1];
+            let w = coordinates_data[box_start + 2];
+            let h = coordinates_data[box_start + 3];
 
             detections.push(Detection {
                 x_min: cx - w / 2.0,
@@ -127,9 +126,7 @@ impl Detector for CoremlDetector {
 }
 
 /// Convert an OpenCV Mat (BGR or BGRA) into a CVPixelBuffer for CoreML input.
-fn mat_to_pixel_buffer(
-    mat: &Mat,
-) -> Result<objc2::rc::Retained<objc2_core_video::CVPixelBuffer>> {
+fn mat_to_pixel_buffer(mat: &Mat) -> Result<objc2::rc::Retained<objc2_core_video::CVPixelBuffer>> {
     let width = mat.cols() as usize;
     let height = mat.rows() as usize;
     let channels = mat.channels() as usize;
@@ -142,7 +139,7 @@ fn mat_to_pixel_buffer(
         let mut bgra = Mat::default();
         opencv::imgproc::cvt_color_def(mat, &mut bgra, opencv::imgproc::COLOR_BGR2BGRA)?;
 
-        let data = bgra.data() as *const u8;
+        let data = bgra.data();
         if data.is_null() {
             anyhow::bail!("BGRA Mat data pointer is null");
         }
@@ -150,7 +147,7 @@ fn mat_to_pixel_buffer(
         let slice = unsafe { std::slice::from_raw_parts(data, height * bytes_per_row) };
         unsafe { ffi::create_pixel_buffer_from_bgra_data(slice, width, height, bytes_per_row) }
     } else {
-        let data = mat.data() as *const u8;
+        let data = mat.data();
         if data.is_null() {
             anyhow::bail!("Mat data pointer is null");
         }

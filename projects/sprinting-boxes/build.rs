@@ -11,7 +11,6 @@ fn main() {
     #[cfg(target_os = "macos")]
     compile_coreml_helpers();
 
-
     println!("cargo:rerun-if-changed=../sb-dashboard/package.json");
     println!("cargo:rerun-if-changed=../sb-dashboard/package-lock.json");
     println!("cargo:rerun-if-changed=../sb-dashboard/src");

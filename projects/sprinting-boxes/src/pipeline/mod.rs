@@ -4,7 +4,6 @@ pub mod crop;
 pub mod detection_worker;
 pub mod feature;
 pub mod finalize;
-pub mod image_worker;
 pub mod orchestrator;
 pub mod reader;
 pub mod types;

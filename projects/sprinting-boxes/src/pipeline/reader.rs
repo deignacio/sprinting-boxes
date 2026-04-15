@@ -1,6 +1,6 @@
 // Reader worker: extracts frames from video and sends them through a channel
 
-use crate::pipeline::types::{RawFrame, FrameData};
+use crate::pipeline::types::{FrameData, RawFrame};
 use crate::video::VideoReader;
 use anyhow::{anyhow, Result};
 use crossbeam::channel::Sender;
@@ -55,10 +55,13 @@ pub fn read_worker(
             let start_inst = std::time::Instant::now();
             match reader.read_unit(unit_id) {
                 Ok(mat) => {
-                    if tx.send(RawFrame {
-                        id: unit_id,
-                        data: FrameData::Mat(mat),
-                    }).is_err() {
+                    if tx
+                        .send(RawFrame {
+                            id: unit_id,
+                            data: FrameData::Mat(mat),
+                        })
+                        .is_err()
+                    {
                         return Ok(()); // Receiver closed
                     }
                     let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
@@ -70,10 +73,7 @@ pub fn read_worker(
                     if msg.contains("End of stream") {
                         // Video exhausted before the estimated range was complete.
                         // This is expected when the keyframe count estimate overshoots.
-                        tracing::info!(
-                            "Reader worker: EOF at unit {} — stopping cleanly",
-                            unit_id
-                        );
+                        tracing::info!("Reader worker: EOF at unit {} — stopping cleanly", unit_id);
                         return Ok(());
                     }
                     // ROBUSTNESS: For non-EOF errors, send an empty frame to preserve

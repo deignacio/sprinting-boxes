@@ -5,11 +5,11 @@
 
 #![allow(dead_code)]
 
+use anyhow::Result;
 #[cfg(target_os = "macos")]
 use metal::Device;
 #[cfg(target_os = "macos")]
 use objc2_core_video::CVPixelBuffer;
-use anyhow::Result;
 
 /// GPU-based tile extractor using Metal.
 /// Manages IOSurface-backed tile pool and GPU blit operations.
@@ -29,8 +29,8 @@ impl TileExtractor {
     /// Initializes Metal device and creates IOSurface-backed CVPixelBuffer pool.
     pub fn new(tile_width: u32, tile_height: u32, _pool_size: usize) -> Result<Self> {
         // Get default Metal device
-        let device = Device::system_default()
-            .ok_or_else(|| anyhow::anyhow!("No Metal device available"))?;
+        let device =
+            Device::system_default().ok_or_else(|| anyhow::anyhow!("No Metal device available"))?;
 
         // Create command queue for submitting GPU work
         let command_queue = device.new_command_queue();

@@ -2,14 +2,13 @@
 //!
 //! Provides safe Rust wrappers around Objective-C CoreML helpers that handle
 //! protocol conversions and data extraction.
-#![cfg(target_os = "macos")]
 #![allow(dead_code)]
 
 use anyhow::Result;
 use objc2::rc::Retained;
-use objc2_foundation::{NSString, NSDictionary};
-use objc2_core_ml::{MLFeatureValue, MLMultiArray, MLModel};
+use objc2_core_ml::{MLFeatureValue, MLModel, MLMultiArray};
 use objc2_core_video::CVPixelBuffer;
+use objc2_foundation::{NSDictionary, NSString};
 use std::ffi::c_float;
 
 // Struct for prediction data extraction result
@@ -87,8 +86,8 @@ pub unsafe fn create_feature_provider_from_pixel_buffer(
         anyhow::bail!("Failed to create feature provider from CVPixelBuffer");
     }
 
-    Ok(Retained::from_raw(provider_ptr as *mut _)
-        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from provider"))?)
+    Retained::from_raw(provider_ptr as *mut _)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from provider"))
 }
 
 /// Create feature provider from dictionary
@@ -101,8 +100,8 @@ pub unsafe fn create_feature_provider(
         anyhow::bail!("Failed to create MLDictionaryFeatureProvider");
     }
 
-    Ok(Retained::from_raw(provider_ptr as *mut _)
-        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from provider"))?)
+    Retained::from_raw(provider_ptr as *mut _)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from provider"))
 }
 
 /// Run model inference and immediately extract both outputs
@@ -138,8 +137,13 @@ pub unsafe fn run_prediction_and_extract(
         }
 
         // Copy C float arrays into Rust Vecs and free C allocations
-        let confidence_data = if extraction_result.confidence_count > 0 && !extraction_result.confidence_data.is_null() {
-            let slice = std::slice::from_raw_parts(extraction_result.confidence_data, extraction_result.confidence_count as usize);
+        let confidence_data = if extraction_result.confidence_count > 0
+            && !extraction_result.confidence_data.is_null()
+        {
+            let slice = std::slice::from_raw_parts(
+                extraction_result.confidence_data,
+                extraction_result.confidence_count as usize,
+            );
             slice.to_vec()
         } else {
             Vec::new()
@@ -148,8 +152,13 @@ pub unsafe fn run_prediction_and_extract(
             free(extraction_result.confidence_data as *mut std::ffi::c_void);
         }
 
-        let coordinates_data = if extraction_result.coordinates_count > 0 && !extraction_result.coordinates_data.is_null() {
-            let slice = std::slice::from_raw_parts(extraction_result.coordinates_data, extraction_result.coordinates_count as usize);
+        let coordinates_data = if extraction_result.coordinates_count > 0
+            && !extraction_result.coordinates_data.is_null()
+        {
+            let slice = std::slice::from_raw_parts(
+                extraction_result.coordinates_data,
+                extraction_result.coordinates_count as usize,
+            );
             slice.to_vec()
         } else {
             Vec::new()
@@ -174,8 +183,8 @@ pub unsafe fn get_multi_array_output(
         anyhow::bail!("Failed to get MLMultiArray output");
     }
 
-    Ok(Retained::from_raw(multi_array_ptr as *mut _)
-        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from MLMultiArray"))?)
+    Retained::from_raw(multi_array_ptr as *mut _)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from MLMultiArray"))
 }
 
 /// Extract float array from MLMultiArray
@@ -251,17 +260,12 @@ pub unsafe fn create_pixel_buffer_from_bgra_data(
     height: usize,
     bytes_per_row: usize,
 ) -> Result<Retained<CVPixelBuffer>> {
-    let pb_ptr = mlCreatePixelBufferFromBGRAData(
-        data.as_ptr(),
-        width,
-        height,
-        bytes_per_row,
-    );
+    let pb_ptr = mlCreatePixelBufferFromBGRAData(data.as_ptr(), width, height, bytes_per_row);
 
     if pb_ptr.is_null() {
         anyhow::bail!("Failed to create CVPixelBuffer from BGRA data");
     }
 
-    Ok(Retained::from_raw(pb_ptr)
-        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from CVPixelBuffer"))?)
+    Retained::from_raw(pb_ptr)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create Retained from CVPixelBuffer"))
 }

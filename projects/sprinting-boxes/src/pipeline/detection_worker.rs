@@ -1,7 +1,5 @@
 use crate::detection;
-use crate::detection::slicing::{
-    generate_tiles, nms, HbbWrapper, SliceConfig,
-};
+use crate::detection::slicing::{generate_tiles, nms, HbbWrapper, SliceConfig};
 use crate::geometry::transform_ez_to_overview;
 use crate::pipeline::types::{
     BBox, CropResult, DetectedFrame, DetectionSummary, EnrichedDetection, PreprocessedFrame,
@@ -69,7 +67,8 @@ pub fn detection_worker(
                     continue;
                 }
 
-                // Field mode usually: only tile regions that are in targets (like 'field')
+                // If specific sub-regions are named in targets (e.g. "field"), tile only those.
+                // If no sub-regions match, tile the full overview image.
                 let matched_regions: Vec<_> = crop
                     .regions
                     .iter()
@@ -77,15 +76,15 @@ pub fn detection_worker(
                     .collect();
 
                 if matched_regions.is_empty() {
-                    continue;
+                    None
+                } else {
+                    Some(
+                        matched_regions
+                            .into_iter()
+                            .map(|r| r.polygon.clone())
+                            .collect::<Vec<_>>(),
+                    )
                 }
-
-                Some(
-                    matched_regions
-                        .into_iter()
-                        .map(|r| r.polygon.clone())
-                        .collect::<Vec<_>>(),
-                )
             } else {
                 // EZ crops (left/right): skip if not in targets
                 if !targets.contains(&crop.suffix) {
@@ -134,6 +133,10 @@ pub fn detection_worker(
                     if det.confidence < params.min_conf {
                         continue;
                     }
+                    // Only keep COCO-80 class `0`, which maps to `person`
+                    if det.class_id != Some(0) {
+                        continue;
+                    }
 
                     // Detections are in normalized coordinates [0,1] relative to the model input size.
                     // D-FINE model expects 640x640 input. Map coordinates back to crop pixel space.
@@ -147,10 +150,12 @@ pub fn detection_worker(
                     let y2 = det.y_max * MODEL_SIZE + queued.tile.y_offset as f32;
 
                     // Create usls::Hbb with detection info for downstream processing
-                    let mut hbb = Hbb::default().with_xyxy(x1, y1, x2, y2).with_confidence(det.confidence);
+                    let mut hbb = Hbb::default()
+                        .with_xyxy(x1, y1, x2, y2)
+                        .with_confidence(det.confidence);
 
                     if let Some(class_id) = det.class_id {
-                        hbb = hbb.with_id(class_id as usize);
+                        hbb = hbb.with_id(class_id);
                     }
                     if let Some(class_name) = &det.class_name {
                         hbb = hbb.with_name(class_name.as_str());
@@ -159,6 +164,28 @@ pub fn detection_worker(
                     detections_by_crop[queued.crop_index].push(hbb);
                 }
             }
+        }
+
+        // Debug: log class distribution across all detections for this frame
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let mut class_counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for crop_dets in &detections_by_crop {
+                for hbb in crop_dets {
+                    let key = hbb
+                        .name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| format!("id:{}", hbb.id().unwrap_or(0)));
+                    *class_counts.entry(key).or_insert(0) += 1;
+                }
+            }
+            let total: usize = class_counts.values().sum();
+            tracing::debug!(
+                frame_id = frame.id,
+                total,
+                classes = ?class_counts,
+                "detection class distribution (pre-NMS)"
+            );
         }
 
         // 3. Re-assembly Phase: Create CropResults and merge EZ detections into overview

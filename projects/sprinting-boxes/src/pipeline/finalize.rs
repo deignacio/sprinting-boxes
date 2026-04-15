@@ -217,11 +217,9 @@ pub fn finalize_worker(
     output_dir: PathBuf,
     save_crops: bool,
     state: Arc<ProcessingState>,
-    mode: crate::pipeline::types::PipelineMode,
 ) -> Result<()> {
     let crops_dir = output_dir.join("crops");
-    if save_crops && mode == crate::pipeline::types::PipelineMode::Pull {
-        // Only save raw image crops during the initial Pull pass
+    if save_crops {
         let _ = fs::create_dir_all(&crops_dir);
     }
 
@@ -256,47 +254,13 @@ pub fn finalize_worker(
         "field_region_kept",
     ])?;
 
-    // In Field mode, try to load the existing pull_detections to merge into
-    if mode == crate::pipeline::types::PipelineMode::Field {
-        let pull_path = output_dir.join("pull_detections.json");
-        if pull_path.exists() {
-            if let Ok(json) = fs::read_to_string(&pull_path) {
-                // Try to load as compact format first
-                if let Ok(pull_data) = serde_json::from_str::<CompactDetectionFile>(&json) {
-                    tracing::info!(
-                        "Loaded {} existing frames from pull_detections.json (compact format)",
-                        pull_data.frames.len()
-                    );
-                    compact_file = pull_data;
-                } else if let Ok(pull_data) = serde_json::from_str::<Vec<DetectedFrame>>(&json) {
-                    // Fallback to old format
-                    tracing::info!(
-                        "Loaded {} existing frames from pull_detections.json (legacy format)",
-                        pull_data.len()
-                    );
-                    // Convert legacy format to compact format
-                    compact_file.frames = pull_data.iter().map(convert_to_compact).collect();
-                }
-            }
-        } else {
-            tracing::warn!(
-                "Field mode started but pull_detections.json not found at {:?}",
-                pull_path
-            );
-        }
-    }
-
     tracing::info!(
-        "Finalize worker started. output_dir: {:?}, save_crops: {:?}, mode: {:?}",
+        "Finalize worker started. output_dir: {:?}, save_crops: {:?}",
         output_dir,
         save_crops,
-        mode
     );
 
-    let target_filename = match mode {
-        crate::pipeline::types::PipelineMode::Pull => "pull_detections.json",
-        crate::pipeline::types::PipelineMode::Field => "detections.json",
-    };
+    let target_filename = "detections.json";
 
     for frame in rx {
         let start_inst = Instant::now();
@@ -362,8 +326,7 @@ pub fn finalize_worker(
             ])?;
         }
 
-        // We only save raw crop images in Pull mode
-        if save_crops && mode == crate::pipeline::types::PipelineMode::Pull {
+        if save_crops {
             for result in &frame.results {
                 if let Some(img) = &result.image {
                     let filename = format!("frame_{:06}_{}.jpg", frame.id, result.suffix);
@@ -380,18 +343,7 @@ pub fn finalize_worker(
         // Convert to compact format
         let compact_frame = convert_to_compact(&frame);
 
-        if mode == crate::pipeline::types::PipelineMode::Field {
-            // MERGE LOGIC: We already loaded `pull_detections.json` into `compact_file`.
-            // The incoming `frame` from FeatureWorker is already merged (metrics + detections).
-            if let Some(idx) = compact_file.frames.iter().position(|f| f.id == frame.id) {
-                compact_file.frames[idx] = compact_frame;
-            } else {
-                compact_file.frames.push(compact_frame);
-            }
-        } else {
-            // Pull mode: just accumulate
-            compact_file.frames.push(compact_frame);
-        }
+        compact_file.frames.push(compact_frame);
 
         let duration_ms = start_inst.elapsed().as_secs_f64() * 1000.0;
         state.update_stage("finalize", 1, duration_ms);

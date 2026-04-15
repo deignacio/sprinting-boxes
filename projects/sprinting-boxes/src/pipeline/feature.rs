@@ -1,11 +1,6 @@
-use crate::geometry::is_point_in_polygon_robust;
-use crate::pipeline::types::{
-    compact_to_polygon, CompactCropData, CompactDetectionFile, CompactFrameData, CompactRegion,
-    DetectedFrame, EnrichedDetection, ProcessingState,
-};
 use crate::scoring::{
-    calculate_deltas, calculate_frame_metrics, calculate_pre_point_score, CliffDetectorConfig,
-    CliffDetectorState, FrameHistory,
+    calculate_deltas, calculate_frame_metrics, CliffDetectorConfig, CliffDetectorState,
+    FrameHistory,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -13,154 +8,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::pipeline::types::{DetectedFrame, ProcessingState};
+
 // Re-export FeatureConfig for backward compatibility with callers using crate::pipeline::feature::FeatureConfig
 pub use crate::scoring::FeatureConfig;
-
-
-/// Convert compact crop data back to CropResult for merging
-fn compact_crop_to_result(
-    compact: &CompactCropData,
-    suffix: &str,
-    regions: Option<Vec<CompactRegion>>,
-    source_bbox: Option<crate::pipeline::types::BBox>,
-) -> crate::pipeline::types::CropResult {
-    let detections = compact
-        .detections
-        .iter()
-        .map(|d| EnrichedDetection {
-            bbox: crate::pipeline::types::BBox {
-                x: d.x,
-                y: d.y,
-                w: d.w,
-                h: d.h,
-            },
-            confidence: d.confidence,
-            class_id: 0,
-            class_name: Some("person".to_string()),
-            in_end_zone: d.in_end_zone,
-            in_field: d.in_field, // Preserve compact format values
-        })
-        .collect();
-
-    let regions = if let Some(compact_regions) = regions {
-        compact_regions
-            .iter()
-            .map(|r| crate::pipeline::types::RegionalPolygon {
-                name: r.name.clone(),
-                polygon: compact_to_polygon(&r.polygon),
-                effective_polygon: compact_to_polygon(&r.polygon),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    crate::pipeline::types::CropResult {
-        suffix: suffix.to_string(),
-        detections,
-        original_polygon: Vec::new(),
-        effective_polygon: Vec::new(),
-        bbox: source_bbox.unwrap_or(crate::pipeline::types::BBox {
-            x: 0.0,
-            y: 0.0,
-            w: 0.0,
-            h: 0.0,
-        }),
-        image: None,
-        regions,
-    }
-}
-
-/// Convert compact frame data back to DetectedFrame (without metrics)
-fn compact_frame_to_detected(compact: &CompactFrameData) -> DetectedFrame {
-    let mut results = Vec::new();
-
-    for (suffix, compact_crop) in &compact.crops {
-        let regions = if suffix == "overview" {
-            compact_crop.regions.clone()
-        } else {
-            None
-        };
-
-        let source_bbox = if suffix == "left" || suffix == "right" {
-            compact_crop.source_bbox
-        } else {
-            None
-        };
-
-        results.push(compact_crop_to_result(
-            compact_crop,
-            suffix,
-            regions,
-            source_bbox,
-        ));
-    }
-
-    // Correct in_field and in_end_zone flags from compact format
-    // The compact format may have incorrect in_field/in_end_zone values from pull mode.
-    // We need to refine these based on actual region polygons.
-    for result in &mut results {
-        if result.suffix == "overview" {
-            // For overview crop, refine all detections based on region polygons
-            let mut refined_detections = Vec::new();
-
-            for mut detection in result.detections.drain(..) {
-                let mut in_any_region = false;
-
-                // Check each region
-                for region in &result.regions {
-                    if is_point_in_polygon_robust(
-                        detection.bbox.x + detection.bbox.w / 2.0,
-                        detection.bbox.y + detection.bbox.h / 2.0,
-                        &region.effective_polygon,
-                    ) {
-                        in_any_region = true;
-                        if region.name == "left" {
-                            detection.in_end_zone = true;
-                        } else if region.name == "right" {
-                            detection.in_end_zone = true;
-                        } else if region.name == "field" {
-                            detection.in_field = true;
-                        }
-                        // Only set one flag per detection
-                        break;
-                    }
-                }
-
-                // If detection is not in any region, mark as neither
-                if !in_any_region {
-                    detection.in_field = false;
-                    detection.in_end_zone = false;
-                }
-
-                refined_detections.push(detection);
-            }
-
-            result.detections = refined_detections;
-        }
-    }
-
-    DetectedFrame {
-        id: compact.id,
-        results,
-        // Metrics will be computed by the feature worker
-        left_count: 0.0,
-        right_count: 0.0,
-        field_count: 0.0,
-        pre_point_score: 0.0,
-        is_cliff: false,
-        left_emptied_first: false,
-        right_emptied_first: false,
-        maybe_false_positive: false,
-        com_x: None,
-        com_y: None,
-        std_dev: None,
-        com_delta_x: None,
-        com_delta_y: None,
-        std_dev_delta: None,
-        detection_summary: None,
-    }
-}
 
 /// Feature worker: calculates normalized counts, pre-point scores, and detects cliffs.
 ///
@@ -178,26 +29,14 @@ pub fn feature_worker(
     tx_f: Sender<DetectedFrame>,
     config: FeatureConfig,
     state: Arc<ProcessingState>,
-    mode: crate::pipeline::types::PipelineMode,
 ) -> Result<()> {
     use std::io::Write;
 
-    // Create CSV files based on mode
-    let target_features = match mode {
-        crate::pipeline::types::PipelineMode::Pull => "pull_features.csv",
-        crate::pipeline::types::PipelineMode::Field => "features.csv",
-    };
-    let target_points = match mode {
-        crate::pipeline::types::PipelineMode::Pull => "pull_points.csv",
-        crate::pipeline::types::PipelineMode::Field => "points.csv",
-    };
-
-    let features_path = config.output_dir.join(target_features);
-    let points_path = config.output_dir.join(target_points);
+    let features_path = config.output_dir.join("features.csv");
+    let points_path = config.output_dir.join("points.csv");
     tracing::info!(
-        "Feature worker started. output_dir: {:?}, mode: {:?}",
-        config.output_dir,
-        mode
+        "Feature worker started. output_dir: {:?}",
+        config.output_dir
     );
 
     let mut features_csv = std::fs::File::create(&features_path)?;
@@ -218,35 +57,6 @@ pub fn feature_worker(
     let mut history_buffer: Vec<FrameHistory> = Vec::new();
 
     let mut cliff_state = CliffDetectorState::new(CliffDetectorConfig::default());
-    // Load pull detections for merging in Field mode
-    let mut pull_data_map: BTreeMap<usize, DetectedFrame> = BTreeMap::new();
-    if mode == crate::pipeline::types::PipelineMode::Field {
-        let pull_path = config.output_dir.join("pull_detections.json");
-        if pull_path.exists() {
-            if let Ok(json) = std::fs::read_to_string(&pull_path) {
-                // Try to load as compact format first
-                if let Ok(compact_file) = serde_json::from_str::<CompactDetectionFile>(&json) {
-                    for compact_frame in compact_file.frames {
-                        let detected_frame = compact_frame_to_detected(&compact_frame);
-                        pull_data_map.insert(detected_frame.id, detected_frame);
-                    }
-                    tracing::info!(
-                        "Feature worker: Loaded {} frames from pull_detections.json (compact format)",
-                        pull_data_map.len()
-                    );
-                } else if let Ok(pull_list) = serde_json::from_str::<Vec<DetectedFrame>>(&json) {
-                    // Fallback to old format
-                    for f in pull_list {
-                        pull_data_map.insert(f.id, f);
-                    }
-                    tracing::info!(
-                        "Feature worker: Loaded {} frames from pull_detections.json (legacy format)",
-                        pull_data_map.len()
-                    );
-                }
-            }
-        }
-    }
 
     for frame in rx {
         let start_inst = Instant::now();
@@ -255,32 +65,11 @@ pub fn feature_worker(
             break;
         }
 
-        let mut frame = frame;
-        if mode == crate::pipeline::types::PipelineMode::Field {
-            if let Some(pull_frame) = pull_data_map.get(&frame.id) {
-                // Merge pull detections (specifically end-zone ones) into the new frame
-                if let Some(new_ov) = frame.results.iter_mut().find(|r| r.suffix == "overview") {
-                    // Find the overview crop in the pull data and take all its detections that were in_end_zone.
-                    if let Some(pull_ov) =
-                        pull_frame.results.iter().find(|r| r.suffix == "overview")
-                    {
-                        let ez_dets: Vec<_> = pull_ov
-                            .detections
-                            .iter()
-                            .filter(|d| d.in_end_zone)
-                            .cloned()
-                            .collect();
-                        new_ov.detections.extend(ez_dets);
-                    }
-                }
-            }
-        }
-
         input_buffer.insert(frame.id, frame);
 
         while let Some(mut current_frame) = input_buffer.remove(&next_input_id) {
             let (_left_raw, _right_raw, _field_raw, _pre_point_score, _com_x_opt, _com_y_opt) =
-                calculate_frame_metrics(&mut current_frame, &config, mode);
+                calculate_frame_metrics(&mut current_frame, &config);
 
             // Calculate deltas
             calculate_deltas(&mut current_frame, history_buffer.last());
@@ -438,7 +227,7 @@ pub fn feature_worker(
             // Process the frame
             // Calculate metrics
             let (_left_raw, _right_raw, _field_raw, _pre_point_score, _com_x_opt, _com_y_opt) =
-                calculate_frame_metrics(&mut current_frame, &config, mode);
+                calculate_frame_metrics(&mut current_frame, &config);
 
             // Calculate deltas
             calculate_deltas(&mut current_frame, history_buffer.last());
@@ -505,4 +294,3 @@ pub fn feature_worker(
     tracing::info!("Feature worker finished gracefully");
     Ok(())
 }
-

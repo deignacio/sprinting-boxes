@@ -5,14 +5,13 @@
 ///
 /// - macOS: CoreML (zero-copy GPU pipeline via CVPixelBuffer)
 /// - Other: ONNX/RT-DETR via the USLS library
-
 pub mod onnx;
 pub mod slicing;
 
 #[cfg(target_os = "macos")]
-pub mod ffi;
-#[cfg(target_os = "macos")]
 pub mod coreml;
+#[cfg(target_os = "macos")]
+pub mod ffi;
 #[cfg(target_os = "macos")]
 pub mod tile_extractor;
 

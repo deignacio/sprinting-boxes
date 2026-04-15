@@ -105,7 +105,7 @@ export const useVideoProcessing = (
 
   const handleStartProcessing = async (
     backend: string = "opencv",
-    mode: "pull" | "field" = "pull",
+    fast: boolean = false,
   ) => {
     if (!run) return;
     setProcessingError(null);
@@ -121,26 +121,26 @@ export const useVideoProcessing = (
     });
 
     try {
-      console.log(`Starting ${mode} processing via API...`);
+      console.log(`Starting processing via API (fast=${fast})...`);
       const response = await fetch(`/api/runs/${run.run_id}/process/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ backend, mode }),
+        body: JSON.stringify({ backend, fast }),
       });
 
       if (!response.ok) {
         if (response.status === 412) {
           throw new Error("Dependencies not met");
         }
-        throw new Error(`Failed to start ${mode} processing`);
+        throw new Error("Failed to start processing");
       }
 
       const data = await response.json();
-      console.log(`${mode} processing started successfully:`, data);
+      console.log("Processing started successfully:", data);
       setProcessingProgress(data);
       setIsProcessing(true); // Now we can safely connect to SSE
     } catch (e) {
-      console.error(`Failed to start ${mode} processing:`, e);
+      console.error("Failed to start processing:", e);
       setProcessingError(e instanceof Error ? e.message : "Unknown error");
       setIsProcessing(false);
     }

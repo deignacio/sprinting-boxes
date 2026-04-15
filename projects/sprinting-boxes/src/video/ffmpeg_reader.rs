@@ -15,12 +15,10 @@ static FFMPEG_INIT: Once = Once::new();
 /// Ensure FFmpeg is initialized (safe to call multiple times).
 fn init_ffmpeg() -> Result<()> {
     let mut result = Ok(());
-    FFMPEG_INIT.call_once(|| {
-        match ffmpeg_next::init() {
-            Ok(_) => {},
-            Err(e) => {
-                result = Err(anyhow::anyhow!("Failed to initialize FFmpeg: {}", e));
-            }
+    FFMPEG_INIT.call_once(|| match ffmpeg_next::init() {
+        Ok(_) => {}
+        Err(e) => {
+            result = Err(anyhow::anyhow!("Failed to initialize FFmpeg: {}", e));
         }
     });
     result
@@ -179,8 +177,7 @@ impl FfmpegReader {
         // --- Set decoder to skip all non-keyframe frames ---
         // This is the primary optimization: the decoder never parses P/B frames.
         unsafe {
-            (*decoder_ctx.as_mut_ptr()).skip_frame =
-                ffi::AVDiscard::AVDISCARD_NONKEY;
+            (*decoder_ctx.as_mut_ptr()).skip_frame = ffi::AVDiscard::AVDISCARD_NONKEY;
         }
 
         let decoder = decoder_ctx
@@ -276,7 +273,7 @@ impl FfmpegReader {
         }
 
         // Drop the Stream borrow before we need to use input_ctx again.
-        drop(stream);
+        let _ = stream;
         Ok(())
     }
 
@@ -399,7 +396,7 @@ impl FfmpegReader {
                     if self.reuse_packet.stream() == self.video_stream_index {
                         // Skip non-keyframe packets — only I-frames are sent to the decoder
                         let is_key = unsafe {
-                            ((*self.reuse_packet.as_ptr()).flags & ffi::AV_PKT_FLAG_KEY as i32) != 0
+                            ((*self.reuse_packet.as_ptr()).flags & ffi::AV_PKT_FLAG_KEY) != 0
                         };
                         if !is_key {
                             // CRITICAL: Unref packet buffer before continuing to avoid av_malloc leak

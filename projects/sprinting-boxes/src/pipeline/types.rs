@@ -14,14 +14,6 @@ pub enum FrameData {
     Mat(Mat),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PipelineMode {
-    #[default]
-    Pull,
-    Field,
-}
-
 #[derive(Debug, Serialize, Clone)]
 pub struct StageProgress {
     pub current: usize,

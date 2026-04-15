@@ -4,7 +4,7 @@
 //! and frame history tracking for the feature pipeline.
 
 use crate::geometry::is_point_in_polygon_robust;
-use crate::pipeline::types::{DetectedFrame, PipelineMode};
+use crate::pipeline::types::DetectedFrame;
 use std::collections::BTreeMap;
 
 /// Feature extraction configuration (re-exported from feature module for convenience)
@@ -320,13 +320,12 @@ pub fn calculate_deltas(frame: &mut DetectedFrame, prev_history: Option<&FrameHi
 pub fn calculate_frame_metrics(
     frame: &mut DetectedFrame,
     config: &FeatureConfig,
-    mode: PipelineMode,
 ) -> (f32, f32, f32, f32, Option<f32>, Option<f32>) {
     let mut left_count = 0.0;
     let mut right_count = 0.0;
     let mut field_count = 0.0;
     let mut com_points = Vec::new();
-    let mut has_overview = frame.results.iter().any(|r| r.suffix == "overview");
+    let has_overview = frame.results.iter().any(|r| r.suffix == "overview");
 
     // First pass: count and collect CoM points
     for result in frame.results.iter() {
@@ -334,16 +333,13 @@ pub fn calculate_frame_metrics(
             "overview" => {
                 // Two-pass: first classify by region, then track CoM
                 for detection in &result.detections {
-                    let mut found_region = false;
-
                     // Check each region to classify this detection
                     for region in &result.regions {
                         if is_point_in_polygon_robust(
                             detection.bbox.x + detection.bbox.w / 2.0,
-                            detection.bbox.y + detection.bbox.h / 2.0,
+                            detection.bbox.y + detection.bbox.h,
                             &region.effective_polygon,
                         ) {
-                            found_region = true;
                             if region.name == "left" {
                                 left_count += 1.0;
                             } else if region.name == "right" {
@@ -355,13 +351,10 @@ pub fn calculate_frame_metrics(
                         }
                     }
 
-                    // Track CoM in Field mode
-                    if mode == PipelineMode::Field {
-                        com_points.push((
-                            detection.bbox.x + detection.bbox.w / 2.0,
-                            detection.bbox.y + detection.bbox.h / 2.0,
-                        ));
-                    }
+                    com_points.push((
+                        detection.bbox.x + detection.bbox.w / 2.0,
+                        detection.bbox.y + detection.bbox.h,
+                    ));
                 }
             }
             "left" | "right" => {
@@ -409,10 +402,10 @@ pub fn calculate_frame_metrics(
     let field_norm = field_count / config.team_size as f32;
 
     // Calculate pre-point score
-    let pre_point_score = calculate_pre_point_score(left_norm, right_norm, field_norm, config.team_size);
+    let pre_point_score =
+        calculate_pre_point_score(left_norm, right_norm, field_norm, config.team_size);
 
-    // Calculate CoM and StdDev in Field mode only
-    let (com_x, com_y, std_dev) = if mode == PipelineMode::Field && !com_points.is_empty() {
+    let (com_x, com_y, std_dev) = if !com_points.is_empty() {
         let mean_x = com_points.iter().map(|(x, _)| x).sum::<f32>() / com_points.len() as f32;
         let mean_y = com_points.iter().map(|(_, y)| y).sum::<f32>() / com_points.len() as f32;
 
@@ -456,13 +449,11 @@ pub fn calculate_frame_metrics(
     for result in &mut frame.results {
         if result.suffix == "overview" {
             for detection in &mut result.detections {
+                let ground_x = detection.bbox.x + detection.bbox.w / 2.0;
+                let ground_y = detection.bbox.y + detection.bbox.h;
                 let mut found_region = false;
                 for region in &result.regions {
-                    if is_point_in_polygon_robust(
-                        detection.bbox.x + detection.bbox.w / 2.0,
-                        detection.bbox.y + detection.bbox.h / 2.0,
-                        &region.effective_polygon,
-                    ) {
+                    if is_point_in_polygon_robust(ground_x, ground_y, &region.effective_polygon) {
                         found_region = true;
                         if region.name == "left" || region.name == "right" {
                             detection.in_end_zone = true;
@@ -471,6 +462,17 @@ pub fn calculate_frame_metrics(
                             detection.in_field = true;
                             detection.in_end_zone = false;
                         }
+                        tracing::trace!(
+                            ground_x,
+                            ground_y,
+                            bbox_x = detection.bbox.x,
+                            bbox_y = detection.bbox.y,
+                            bbox_w = detection.bbox.w,
+                            bbox_h = detection.bbox.h,
+                            region = region.name.as_str(),
+                            in_end_zone = detection.in_end_zone,
+                            "detection region assignment"
+                        );
                         break;
                     }
                 }
@@ -482,7 +484,14 @@ pub fn calculate_frame_metrics(
         }
     }
 
-    (left_norm, right_norm, field_norm, pre_point_score, com_x, com_y)
+    (
+        left_norm,
+        right_norm,
+        field_norm,
+        pre_point_score,
+        com_x,
+        com_y,
+    )
 }
 
 #[cfg(test)]

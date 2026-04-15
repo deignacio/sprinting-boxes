@@ -96,7 +96,7 @@ pub fn start_processing(
     run_context: &RunContext,
     video_root: &Path,
     backend: &str,
-    mode: crate::pipeline::types::PipelineMode,
+    fast: bool,
 ) -> Result<Arc<ProcessingState>> {
     let video_path = run_context.resolve_video_path(video_root);
 
@@ -111,7 +111,10 @@ pub fn start_processing(
             // If not active but not complete, supervisor is still running
             if !state.is_complete.load(Ordering::Relaxed) {
                 if start.elapsed().as_secs() > 2 {
-                    anyhow::bail!("Run {} is still cleaning up. Process may be hung.", run_context.run_id);
+                    anyhow::bail!(
+                        "Run {} is still cleaning up. Process may be hung.",
+                        run_context.run_id
+                    );
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
@@ -126,52 +129,29 @@ pub fn start_processing(
     let pipeline_configs: Vec<crate::pipeline::types::CropConfig> = (&crops).into();
     let configs = Arc::new(pipeline_configs);
 
-    // Determine the source path for the reader based on mode
-    let source_path_str = match mode {
-        crate::pipeline::types::PipelineMode::Pull => {
-            if !video_path.exists() {
-                return Err(anyhow::anyhow!("Video file NOT FOUND at: {:?}", video_path));
-            }
-            video_path.to_str().unwrap().to_string()
-        }
-        crate::pipeline::types::PipelineMode::Field => {
-            let frames_dir = run_context.output_dir.join("crops");
-            if !frames_dir.exists() {
-                return Err(anyhow::anyhow!(
-                    "Crops directory NOT FOUND at: {:?}",
-                    frames_dir
-                ));
-            }
-            frames_dir.to_str().unwrap().to_string()
-        }
-    };
+    if !video_path.exists() {
+        return Err(anyhow::anyhow!("Video file NOT FOUND at: {:?}", video_path));
+    }
+    let source_path_str = video_path.to_str().unwrap().to_string();
 
     let sample_rate = run_context.sample_rate;
     // Use a dummy reader to get total units.
     // FfmpegReader always operates in keyframe-only mode, so its frame_count() returns the
     // exact keyframe count from a pre-scan. We always probe it directly.
     // For the opencv backend, we estimate from metadata when available (faster startup).
-    let total_units = match mode {
-        crate::pipeline::types::PipelineMode::Pull => match backend {
-            "ffmpeg" => {
-                let dummy = crate::video::ffmpeg_reader::FfmpegReader::new(
-                    &source_path_str,
-                    sample_rate,
-                )?;
-                dummy.frame_count()?
+    let total_units = match backend {
+        "ffmpeg" => {
+            let dummy =
+                crate::video::ffmpeg_reader::FfmpegReader::new(&source_path_str, sample_rate)?;
+            dummy.frame_count()?
+        }
+        _ => {
+            if run_context.duration_secs > 0.0 {
+                (run_context.duration_secs * sample_rate).round() as usize
+            } else {
+                crate::video::opencv_reader::OpencvReader::new(&source_path_str, sample_rate)?
+                    .frame_count()?
             }
-            _ => {
-                if run_context.duration_secs > 0.0 {
-                    (run_context.duration_secs * sample_rate).round() as usize
-                } else {
-                    crate::video::opencv_reader::OpencvReader::new(&source_path_str, sample_rate)?
-                        .frame_count()?
-                }
-            }
-        },
-        crate::pipeline::types::PipelineMode::Field => {
-            crate::video::image_reader::ImageDiskReader::new(&source_path_str, sample_rate)?
-                .frame_count()?
         }
     };
 
@@ -206,13 +186,7 @@ pub fn start_processing(
 
     // Target worker counts
     let target_reader = Arc::new(std::sync::atomic::AtomicUsize::new(reader_workers_initial));
-    let target_crop = Arc::new(std::sync::atomic::AtomicUsize::new(
-        if mode == crate::pipeline::types::PipelineMode::Pull {
-            1
-        } else {
-            0
-        },
-    ));
+    let target_crop = Arc::new(std::sync::atomic::AtomicUsize::new(1));
     let target_detect = Arc::new(std::sync::atomic::AtomicUsize::new(1));
 
     // Control structures
@@ -225,14 +199,11 @@ pub fn start_processing(
         sample_rate,
     });
 
-    // In Pull mode, we only detect EZ crops. In Field mode, we detect the overview (specifically the 'field' region).
-    let regions_to_detect = match mode {
-        crate::pipeline::types::PipelineMode::Pull => {
-            Some(vec!["left".to_string(), "right".to_string()])
-        }
-        crate::pipeline::types::PipelineMode::Field => {
-            Some(vec!["overview".to_string(), "field".to_string()])
-        }
+    // Default: detect on full overview. fast=true: detect only EZ crops (left/right).
+    let regions_to_detect = if fast {
+        Some(vec!["left".to_string(), "right".to_string()])
+    } else {
+        Some(vec!["overview".to_string()])
     };
 
     let detect_control = Arc::new(DetectionControl {
@@ -261,39 +232,9 @@ pub fn start_processing(
 
     register_pipeline(&run_context.run_id, manager.clone());
 
-    // Spawn 1 & 2 conditionally
-    match mode {
-        crate::pipeline::types::PipelineMode::Pull => {
-            spawn_reader_worker(state.clone(), reader_control.clone());
-            spawn_crop_worker(state.clone(), crop_control.clone());
-        }
-        crate::pipeline::types::PipelineMode::Field => {
-            // Image reading directly into preprocessed frames (skips crop worker)
-            let state_img = state.clone();
-            let control_img = reader_control.clone();
-            let configs_img = configs.clone();
-            state.active_reader_workers.fetch_add(1, Ordering::Relaxed);
-
-            std::thread::spawn(move || {
-                tracing::info!("Spawning image reader worker for Field mode");
-                let result = crate::pipeline::image_worker::image_worker(
-                    tx_c.clone(),
-                    state_img.clone(),
-                    control_img,
-                    configs_img,
-                );
-
-                state_img
-                    .active_reader_workers
-                    .fetch_sub(1, Ordering::Relaxed);
-                if let Err(e) = result {
-                    tracing::error!("Image worker failed: {}", e);
-                } else {
-                    tracing::info!("Image worker finished gracefully");
-                }
-            });
-        }
-    }
+    // Spawn 1 & 2: reader + crop worker
+    spawn_reader_worker(state.clone(), reader_control.clone());
+    spawn_crop_worker(state.clone(), crop_control.clone());
 
     // Spawn 3: Detection
     spawn_detection_worker(state.clone(), detect_control.clone());
@@ -303,7 +244,6 @@ pub fn start_processing(
     let state_feat = state.clone();
     let output_dir_feat = run_context.output_dir.clone();
     let team_size = run_context.team_size as usize;
-    let mode_feat = mode;
     thread::spawn(move || {
         let config = crate::pipeline::feature::FeatureConfig {
             team_size,
@@ -311,9 +251,7 @@ pub fn start_processing(
             lookahead_frames: 15,
             output_dir: output_dir_feat,
         };
-        if let Err(e) =
-            crate::pipeline::feature::feature_worker(rx_d, tx_f, config, state_feat, mode_feat)
-        {
+        if let Err(e) = crate::pipeline::feature::feature_worker(rx_d, tx_f, config, state_feat) {
             tracing::error!("Feature worker failed: {}", e);
         }
     });
@@ -324,16 +262,11 @@ pub fn start_processing(
     let save_visuals = std::env::var("SAVE_VISUAL_CROPS")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(true);
-    let mode_f = mode;
 
     thread::spawn(move || {
-        if let Err(e) = crate::pipeline::finalize::finalize_worker(
-            rx_f,
-            output_dir,
-            save_visuals,
-            state_f,
-            mode_f,
-        ) {
+        if let Err(e) =
+            crate::pipeline::finalize::finalize_worker(rx_f, output_dir, save_visuals, state_f)
+        {
             tracing::error!("Finalize worker failed: {}", e);
         }
     });

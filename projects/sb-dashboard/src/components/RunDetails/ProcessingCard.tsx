@@ -1,5 +1,5 @@
-import React from "react";
-import { Play, AlertCircle, Square } from "lucide-react";
+import React, { useState } from "react";
+import { Play, AlertCircle, Square, Zap } from "lucide-react";
 import type { RunDetail, ProcessingProgress } from "../../types/run";
 
 interface ProcessingCardProps {
@@ -7,9 +7,7 @@ interface ProcessingCardProps {
   isProcessing: boolean;
   processingProgress: ProcessingProgress | null;
   processingError: string | null;
-  selectedBackend: string;
-  onBackendChange: (backend: string) => void;
-  handleStartProcessing: (backend: string, mode?: "pull" | "field") => void;
+  handleStartProcessing: (backend: string, fast: boolean) => void;
   handleStopProcessing: () => void;
   handleUpdateWorkers: (stage: string, delta: number) => void;
 }
@@ -31,12 +29,11 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
   isProcessing,
   processingProgress,
   processingError,
-  selectedBackend,
-  onBackendChange,
   handleStartProcessing,
   handleStopProcessing,
   handleUpdateWorkers,
 }) => {
+  const [fast, setFast] = useState(false);
   // Calculate ETA
   const finalizedCount = processingProgress?.stages.finalize?.current ?? 0;
   const totalFrames = processingProgress?.total_frames || 1;
@@ -443,50 +440,37 @@ const ProcessingCard: React.FC<ProcessingCardProps> = ({
           </button>
         ) : (
           <>
-            {!processingProgress?.is_complete && (
-              <div
-                style={{
-                  display: "flex",
-                  gap: "0.5rem",
-                  marginBottom: "1rem",
-                }}
-              >
-                {["opencv", "ffmpeg"].map((b) => (
-                  <button
-                    key={b}
-                    onClick={() => onBackendChange(b)}
-                    className={`btn btn-sm ${selectedBackend === b ? "btn-primary" : "btn-secondary"
-                      }`}
-                    style={{
-                      flex: 1,
-                      opacity: selectedBackend === b ? 1 : 0.6,
-                      transition: "opacity 0.2s ease",
-                    }}
-                  >
-                    {b === "opencv" ? "OpenCV" : "FFmpeg (video-rs)"}
-                  </button>
-                ))}
-              </div>
-            )}
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                marginBottom: "0.75rem",
+                cursor: "pointer",
+                fontSize: "0.875rem",
+                color: fast ? "var(--accent-secondary)" : "var(--text-muted)",
+                userSelect: "none",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={fast}
+                onChange={(e) => setFast(e.target.checked)}
+                style={{ accentColor: "var(--accent-secondary)", width: "1rem", height: "1rem" }}
+              />
+              <Zap size={14} />
+              Fast mode (end-zone crops only)
+            </label>
             <button
-              onClick={() => handleStartProcessing(selectedBackend, "pull")}
+              onClick={() => handleStartProcessing("ffmpeg", fast)}
               className="btn btn-primary"
-              style={{ width: "100%", marginBottom: "0.5rem" }}
+              style={{ width: "100%" }}
               disabled={processingProgress?.is_complete}
             >
               <Play size={18} />
               {processingProgress?.is_complete
-                ? "Pull Processing Complete"
-                : "Start Pull Pipeline"}
-            </button>
-            <button
-              onClick={() => handleStartProcessing(selectedBackend, "field")}
-              className="btn btn-secondary"
-              style={{ width: "100%", borderColor: "var(--accent-secondary)", color: "var(--accent-secondary)" }}
-              title="Runs Field Detection using existing crops after auditing."
-            >
-              <Play size={18} />
-              Start Field Pipeline
+                ? "Processing Complete"
+                : "Start Processing"}
             </button>
           </>
         )

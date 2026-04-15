@@ -24,7 +24,6 @@ const RunDetailsPage: React.FC = () => {
   const [auditSettings, setAuditSettings] = useState<AuditSettings | null>(
     null,
   );
-  const [selectedBackend, setSelectedBackend] = useState("opencv");
   const [frameViewerInitialIndex, setFrameViewerInitialIndex] = useState<number | undefined>(undefined);
 
   const {
@@ -273,8 +272,6 @@ const RunDetailsPage: React.FC = () => {
                   isProcessing={isProcessing}
                   processingProgress={processingProgress}
                   processingError={processingError}
-                  selectedBackend={selectedBackend}
-                  onBackendChange={setSelectedBackend}
                   handleStartProcessing={handleStartProcessing}
                   handleStopProcessing={handleStopProcessing}
                   handleUpdateWorkers={handleUpdateWorkers}
