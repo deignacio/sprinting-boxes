@@ -412,6 +412,18 @@ pub struct DetectedFrame {
     pub detection_summary: Option<DetectionSummary>,
 }
 
+impl DetectedFrame {
+    /// Returns the width and height of the overview crop result.
+    /// Falls back to reference dimensions (1920×1080) if overview crop is not found.
+    pub fn overview_crop_dimensions(&self) -> (f32, f32) {
+        self.results
+            .iter()
+            .find(|r| r.suffix == "overview")
+            .map(|r| (r.bbox.w, r.bbox.h))
+            .unwrap_or((1920.0, 1080.0))
+    }
+}
+
 /// Compact detection format for JSON output (optimized for size)
 /// Contains only the data needed for visualization, not computed metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]

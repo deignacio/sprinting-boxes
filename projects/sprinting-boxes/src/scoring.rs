@@ -333,6 +333,8 @@ pub fn calculate_frame_metrics(
             "overview" => {
                 // Two-pass: first classify by region, then track CoM
                 for detection in &result.detections {
+                    let mut in_valid_region = false;
+
                     // Check each region to classify this detection
                     for region in &result.regions {
                         if is_point_in_polygon_robust(
@@ -340,6 +342,7 @@ pub fn calculate_frame_metrics(
                             detection.bbox.y + detection.bbox.h,
                             &region.effective_polygon,
                         ) {
+                            in_valid_region = true;
                             if region.name == "left" {
                                 left_count += 1.0;
                             } else if region.name == "right" {
@@ -351,10 +354,13 @@ pub fn calculate_frame_metrics(
                         }
                     }
 
-                    com_points.push((
-                        detection.bbox.x + detection.bbox.w / 2.0,
-                        detection.bbox.y + detection.bbox.h,
-                    ));
+                    // Only include detections in valid regions for CoM calculation
+                    if in_valid_region {
+                        com_points.push((
+                            detection.bbox.x + detection.bbox.w / 2.0,
+                            detection.bbox.y + detection.bbox.h,
+                        ));
+                    }
                 }
             }
             "left" | "right" => {
@@ -410,14 +416,11 @@ pub fn calculate_frame_metrics(
         let mean_y = com_points.iter().map(|(_, y)| y).sum::<f32>() / com_points.len() as f32;
 
         // Normalized: map from image coordinates [0, width] x [0, height] to [0, 1]
-        // Assuming standard dimensions (these are hardcoded in the original)
-        let (norm_com_x, norm_com_y) = {
-            let img_w = 1920.0;
-            let img_h = 1080.0;
-            (mean_x / img_w, mean_y / img_h)
-        };
+        // Use actual crop dimensions from the overview CropResult bbox.
+        let (img_w, img_h) = frame.overview_crop_dimensions();
+        let (norm_com_x, norm_com_y) = (mean_x / img_w, mean_y / img_h);
 
-        // Variance: StdDev normalized by diagonal
+        // Variance: StdDev normalized by diagonal of the actual crop.
         let variance = com_points
             .iter()
             .map(|(x, y)| {
@@ -428,7 +431,8 @@ pub fn calculate_frame_metrics(
             .sum::<f32>()
             / com_points.len() as f32;
 
-        let diagonal = ((1920.0_f32.powi(2) + 1080.0_f32.powi(2)).sqrt()) / 3.0;
+        let (img_w, img_h) = frame.overview_crop_dimensions();
+        let diagonal = ((img_w.powi(2) + img_h.powi(2)).sqrt()) / 3.0;
         let std_dev = variance.sqrt() / diagonal;
 
         (Some(norm_com_x), Some(norm_com_y), Some(std_dev))
