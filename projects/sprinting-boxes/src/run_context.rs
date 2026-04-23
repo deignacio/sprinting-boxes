@@ -186,7 +186,7 @@ impl RunContext {
 
         // Parameters
         const CROP_PADDING: f32 = 0.01; // 1% crop padding
-        const BUFFER_PCT: f32 = 0.03; // 3% diagonal buffer
+        const BUFFER_PCT: f32 = 0.05; // 5% diagonal buffer
 
         // Left Endzone (Effective)
         let left_buffer_dist = crate::geometry::compute_buffer_distance(&left_global, BUFFER_PCT);

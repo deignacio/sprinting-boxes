@@ -199,11 +199,16 @@ pub fn start_processing(
         sample_rate,
     });
 
-    // Default: detect on full overview. fast=true: detect only EZ crops (left/right).
+    // fast=true: detect only EZ crops (high-res endzone focus).
+    // fast=false: detect overview (field coverage) + EZ crops (high-res endzone), merged by detection_worker.
     let regions_to_detect = if fast {
         Some(vec!["left".to_string(), "right".to_string()])
     } else {
-        Some(vec!["overview".to_string()])
+        Some(vec![
+            "overview".to_string(),
+            "left".to_string(),
+            "right".to_string(),
+        ])
     };
 
     let detect_control = Arc::new(DetectionControl {
