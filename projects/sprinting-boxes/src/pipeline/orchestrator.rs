@@ -208,6 +208,7 @@ pub fn start_processing(
             "overview".to_string(),
             "left".to_string(),
             "right".to_string(),
+            "field".to_string(),
         ])
     };
 
