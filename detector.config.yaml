@@ -1,0 +1,38 @@
+---
+# Cliff Detector Configuration
+# These parameters control how the cliff detector identifies point-start transitions
+
+# Minimum score drop required to detect a cliff
+# Higher values reduce false positives but may miss subtle transitions
+min_drop: 0.15
+
+# Minimum duration (in frames) of sustained high scores before the cliff
+# Requires stable setup phase; higher values reduce false positives
+# min_prepoint_duration: 10  # original default
+min_prepoint_duration: 30  # 2026-05-31 evaluation sweep
+
+# Minimum duration (in frames) of low scores after the cliff
+# Requires endzone clearing; higher values reduce false positives
+min_post_duration: 10
+
+# Maximum median score allowed in post-point window
+# Higher values more permissive to player movements after pull
+# max_post_proba: 0.55  # original default
+max_post_proba: 0.30  # 2026-05-31 evaluation sweep
+
+# Absolute threshold for the immediate post-cliff frame
+# Stricter requirement for the exact frame after the transition
+absolute_threshold: 0.5
+
+# Minimum gap (in frames) between consecutive detected cliffs
+# Prevents double-detection of the same event
+min_gap: 20
+
+# Window size for smoothing the score signal
+# Higher values more aggressive smoothing; affects drop calculation
+smoothing_window: 3
+
+# Field onset for field suppression term calculation
+# Controls how much occupancy in the field affects the score
+# field_term = clamp(field_onset - field_count, 0, 1)
+field_onset: 1.5

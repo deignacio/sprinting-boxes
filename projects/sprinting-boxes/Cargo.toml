@@ -16,6 +16,7 @@ mime_guess = "2.0.4"
 dotenvy = "0.15.7"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
+serde_yaml = "0.9"
 chrono = { version = "0.4.38", features = ["serde"] }
 walkdir = "2.5.0"
 indicatif = "0.17.8"
@@ -32,6 +33,7 @@ usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "or
 image = "0.25.9"
 ffmpeg-next = "8.0"
 csv = "1.3"
+rayon = "1.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 usls = { version = "0.1.11", default-features = false, features = ["rtdetr", "ort-download-binaries", "github", "image-default-formats", "coreml", "hf-hub"] }

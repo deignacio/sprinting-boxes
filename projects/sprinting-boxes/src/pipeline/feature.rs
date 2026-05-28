@@ -1,3 +1,4 @@
+use crate::config::DetectorConfig;
 use crate::scoring::{
     calculate_deltas, calculate_frame_metrics, CliffDetectorConfig, CliffDetectorState,
     FrameHistory,
@@ -56,7 +57,10 @@ pub fn feature_worker(
     let mut lookahead_buffer: Vec<DetectedFrame> = Vec::new();
     let mut history_buffer: Vec<FrameHistory> = Vec::new();
 
-    let mut cliff_state = CliffDetectorState::new(CliffDetectorConfig::default());
+    // Load detector config from file (falls back to defaults if file missing)
+    let detector_config = DetectorConfig::from_file("detector.config.yaml");
+    let cliff_config = CliffDetectorConfig::from(detector_config);
+    let mut cliff_state = CliffDetectorState::new(cliff_config);
 
     for frame in rx {
         let start_inst = Instant::now();

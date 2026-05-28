@@ -55,7 +55,31 @@ const ListPage: React.FC = () => {
     <div className="container">
       <nav className="nav">
         <div className="logo">Sprinting Boxes</div>
-        <div className="badge badge-video">Dashboard</div>
+        <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
+          <Link
+            to="/evaluation"
+            style={{
+              color: "#94a3b8",
+              textDecoration: "none",
+              fontSize: "0.9rem",
+              fontWeight: 500,
+              padding: "8px 12px",
+              borderRadius: "6px",
+              transition: "all 0.2s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "#334155";
+              e.currentTarget.style.color = "#cbd5e1";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "";
+              e.currentTarget.style.color = "#94a3b8";
+            }}
+          >
+            Global Tuning
+          </Link>
+          <div className="badge badge-video">Dashboard</div>
+        </div>
       </nav>
 
       <div className="grid grid-cols-2">

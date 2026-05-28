@@ -1,4 +1,6 @@
 use crate::cli::Args;
+use crate::config::DetectorConfig;
+use crate::gpu_detector::GPUCliffDetector;
 use crate::web::api::{
     backfill_metadata_handler, compute_crops_handler, create_run_handler,
     extract_calibration_frames_handler, get_calibration_frames_handler, get_crops_handler,
@@ -14,8 +16,10 @@ use crate::web::audit::{
     save_vlc_playlist_handler, serve_run_crop_handler, update_audit_settings_handler,
     update_cliff_field_handler,
 };
+use crate::web::evaluation::{get_detector_config_handler, global_sweep_handler};
 use anyhow::Result;
 use axum::{
+    extract::FromRef,
     routing::{get, post, put},
     Router,
 };
@@ -23,10 +27,44 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use tracing::{info, warn};
 
+#[derive(Clone)]
+pub struct AppState {
+    pub args: Arc<Args>,
+    pub gpu_detector: Option<Arc<GPUCliffDetector>>,
+    pub detector_config: Arc<DetectorConfig>,
+}
+
+impl FromRef<AppState> for Arc<Args> {
+    fn from_ref(state: &AppState) -> Self {
+        state.args.clone()
+    }
+}
+
 pub async fn run_server(args: Args) -> Result<()> {
     let host = args.host;
     let port = args.port;
     let shared_args = Arc::new(args);
+
+    // Load detector configuration from YAML file
+    let detector_config = Arc::new(DetectorConfig::from_file("detector.config.yaml"));
+
+    // Initialize GPU detector (optional, falls back to CPU if unavailable)
+    let gpu_detector = match GPUCliffDetector::new() {
+        Ok(detector) => {
+            info!("GPU-accelerated cliff detector initialized");
+            Some(Arc::new(detector))
+        }
+        Err(e) => {
+            warn!("GPU initialization failed ({}), falling back to CPU", e);
+            None
+        }
+    };
+
+    let app_state = AppState {
+        args: shared_args,
+        gpu_detector,
+        detector_config,
+    };
 
     let mut current_port = port;
     let listener = loop {
@@ -113,6 +151,14 @@ pub async fn run_server(args: Args) -> Result<()> {
         )
         .route("/api/runs/:id/audit/features", get(get_features_handler))
         .route(
+            "/api/evaluation/config",
+            get(get_detector_config_handler),
+        )
+        .route(
+            "/api/evaluation/sweep-all",
+            post(global_sweep_handler),
+        )
+        .route(
             "/api/runs/:id/export/youtube",
             get(get_youtube_chapters_handler),
         )
@@ -127,7 +173,7 @@ pub async fn run_server(args: Args) -> Result<()> {
         .route("/api/runs/:id/crops/:filename", get(serve_run_crop_handler))
         .route("/", get(index_handler))
         .route("/*path", get(static_handler))
-        .with_state(shared_args);
+        .with_state(app_state);
 
     let tokio_listener = tokio::net::TcpListener::from_std(listener)?;
     info!(
