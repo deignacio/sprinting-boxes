@@ -118,6 +118,8 @@ cargo run -p sprinting-boxes
 ```
 *The server typically runs on port `12206`, and the dashboard is embedded.*
 
-## License
+## License and Attributions
 
 See the [LICENSE](LICENSE) file for details.
+
+Credit to Will Chen (@wpchen) for sharing his point-start and pull-side detection algorithms with me and for his early prototype demonstrating the viability of his approach.
