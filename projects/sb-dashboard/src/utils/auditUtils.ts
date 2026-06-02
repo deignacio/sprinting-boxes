@@ -36,6 +36,21 @@ export interface AuditState {
   settings: AuditSettings;
 }
 
+export interface FeatureData {
+  frame_index: number;
+  left_count: number;
+  right_count: number;
+  field_count: number;
+  pre_point_score: number;
+  crop_path?: string;
+  com_x?: number;
+  com_y?: number;
+  std_dev?: number;
+  com_delta_x?: number;
+  com_delta_y?: number;
+  std_dev_delta?: number;
+}
+
 /**
  * Recalculate audit by calling the backend API
  * 

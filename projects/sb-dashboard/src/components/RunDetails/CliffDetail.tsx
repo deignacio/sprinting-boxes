@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { type CliffData, type AuditSettings } from "../../utils/auditUtils";
+import { type CliffData, type AuditSettings, type FeatureData } from "../../utils/auditUtils";
 
 interface CliffDetailProps {
   runId: string;
@@ -12,14 +12,6 @@ interface CliffDetailProps {
   onStateChange: () => void;
 }
 
-interface FrameData {
-  frame_index: number;
-  left_count: number;
-  right_count: number;
-  field_count: number;
-  pre_point_score: number;
-  crop_path?: string;
-}
 
 export default function CliffDetail({
   runId,
@@ -41,7 +33,7 @@ export default function CliffDetail({
   const [localRightColor, setLocalRightColor] = useState<string | null>(
     cliff.right_team_color || null,
   );
-  const [frames, setFrames] = useState<FrameData[]>([]);
+  const [frames, setFrames] = useState<FeatureData[]>([]);
   const [enlarged, setEnlarged] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -57,7 +49,7 @@ export default function CliffDetail({
     try {
       const response = await fetch(`/api/runs/${runId}/audit/features`);
       if (response.ok) {
-        const data: FrameData[] = await response.json();
+        const data: FeatureData[] = await response.json();
         const rangeStart = cliff.frame_index - lookback;
         const rangeEnd = cliff.frame_index + lookahead;
         const filtered = data.filter(

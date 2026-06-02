@@ -4,6 +4,7 @@ import {
   type CliffData,
   type AuditSettings,
 } from "../../utils/auditUtils";
+import CliffContextPanel from "./CliffContextPanel";
 
 interface AuditViewProps {
   runId: string;
@@ -11,7 +12,7 @@ interface AuditViewProps {
   onViewClick?: (frameIndex: number) => void;
 }
 
-export default function AuditView({ runId, onCliffClick, onViewClick }: AuditViewProps) {
+export default function AuditView({ runId, onCliffClick: _onCliffClick, onViewClick }: AuditViewProps) {
   const [cliffs, setCliffs] = useState<CliffData[]>([]);
   const [settings, setSettings] = useState<AuditSettings>({
     light_team_name: "Light",
@@ -21,6 +22,7 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
     video_start_time: "00:00:00",
   });
   const [localSettings, setLocalSettings] = useState(settings);
+  const [expandedCliffIdx, setExpandedCliffIdx] = useState<number | null>(null);
   const isInputFocused = useRef(false);
 
   const loadAuditData = useCallback(async () => {
@@ -100,6 +102,37 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
       await syncAuditData(processed);
     } catch (err) {
       console.error("Failed to recalculate audit", err);
+    }
+  };
+
+  const handleStatusChangeWithAutoAdvance = async (idx: number, newStatus: CliffData["status"]) => {
+    await handleStatusChange(idx, newStatus);
+    // Find next unconfirmed cliff and auto-expand
+    const nextIdx = cliffs.findIndex((c, i) => i > idx && c.status === "Unconfirmed");
+    setExpandedCliffIdx(nextIdx >= 0 ? nextIdx : null);
+  };
+
+  const handleToggleSide = async (idx: number) => {
+    const cliff = cliffs[idx];
+    try {
+      await fetch(`/api/runs/${runId}/audit/cliffs/${cliff.frame_index}/side`, {
+        method: "POST",
+      });
+      loadAuditData();
+    } catch (err) {
+      console.error("Failed to toggle side", err);
+    }
+  };
+
+  const handleSwitchColors = async (idx: number) => {
+    const cliff = cliffs[idx];
+    try {
+      await fetch(`/api/runs/${runId}/audit/cliffs/${cliff.frame_index}/colors`, {
+        method: "POST",
+      });
+      loadAuditData();
+    } catch (err) {
+      console.error("Failed to switch colors", err);
     }
   };
 
@@ -620,7 +653,7 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
         </span>
       </div>
 
-      <div style={{ overflowX: "auto" }}>
+      <div style={{ overflowX: "auto", overflowY: "visible" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid #334155" }}>
@@ -684,26 +717,29 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
               }
 
               return (
-                <tr
-                  key={idx}
-                  onClick={() => onCliffClick && onCliffClick(cliff)}
-                  style={{
-                    borderBottom: "1px solid #334155",
-                    cursor: "pointer",
-                    opacity: isFP ? 0.5 : 1,
-                    background: isHalftime ? "#422006" : (isConfirmed ? "#1e40af20" : "transparent"),
-                  }}
-                >
-                  <td style={{ padding: "12px", color: "#f1f5f9" }}>
-                    {idx + 1}
-                  </td>
-                  <td
+                <>
+                  <tr
+                    key={`cliff-${idx}`}
+                    onClick={() => {
+                      setExpandedCliffIdx(expandedCliffIdx === idx ? null : idx);
+                    }}
                     style={{
-                      padding: "12px",
-                      color: "#f1f5f9",
-                      position: "relative",
+                      borderBottom: "1px solid #334155",
+                      cursor: "pointer",
+                      opacity: isFP ? 0.5 : 1,
+                      background: isHalftime ? "#422006" : (isConfirmed ? "#1e40af20" : "transparent"),
                     }}
                   >
+                    <td style={{ padding: "12px", color: "#f1f5f9" }}>
+                      {idx + 1}
+                    </td>
+                    <td
+                      style={{
+                        padding: "12px",
+                        color: "#f1f5f9",
+                        position: "relative",
+                      }}
+                    >
                     {cliff.timestamp}
                     {cliff.is_break && (
                       <span
@@ -730,6 +766,7 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                       </span>
                     ) : isHalftime ? (
                       <select
+                        onClick={(e) => e.stopPropagation()}
                         value={cliff.halftime_winner || ""}
                         onChange={(e) =>
                           handleHalftimeWinnerChange(
@@ -751,6 +788,7 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                       </select>
                     ) : (
                       <select
+                        onClick={(e) => e.stopPropagation()}
                         value={cliff.left_team_color || "light"}
                         onChange={(e) =>
                           handleAuditChange(
@@ -870,7 +908,10 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                     ) : (
                       <div style={{ display: "flex", gap: "8px" }}>
                         <button
-                          onClick={() => onViewClick && onViewClick(cliff.frame_index)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onViewClick && onViewClick(cliff.frame_index);
+                          }}
                           style={{
                             padding: "4px 12px",
                             background: "#3b82f6",
@@ -884,7 +925,10 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                           View
                         </button>
                         <button
-                          onClick={() => handleStatusChange(idx, "Confirmed")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStatusChange(idx, "Confirmed");
+                          }}
                           style={{
                             padding: "4px 12px",
                             background: "#10b981",
@@ -898,7 +942,10 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                           Confirm
                         </button>
                         <button
-                          onClick={() => handleInsertHalftime(idx)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleInsertHalftime(idx);
+                          }}
                           style={{
                             padding: "4px 12px",
                             background: "#fbbf24",
@@ -912,9 +959,10 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                           + Halftime
                         </button>
                         <button
-                          onClick={() =>
-                            handleStatusChange(idx, "FalsePositive")
-                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStatusChange(idx, "FalsePositive");
+                          }}
                           style={{
                             padding: "4px 12px",
                             background: "transparent",
@@ -931,6 +979,23 @@ export default function AuditView({ runId, onCliffClick, onViewClick }: AuditVie
                     )}
                   </td>
                 </tr>
+                {expandedCliffIdx === idx && (
+                  <tr key={`panel-${idx}`}>
+                    <td colSpan={6} style={{ padding: 0 }}>
+                      <CliffContextPanel
+                        runId={runId}
+                        cliff={cliff}
+                        settings={settings}
+                        isReadOnly={isConfirmed || isFP || isHalftime}
+                        onConfirm={() => handleStatusChangeWithAutoAdvance(idx, "Confirmed")}
+                        onReject={() => handleStatusChangeWithAutoAdvance(idx, "FalsePositive")}
+                        onToggleSide={() => handleToggleSide(idx)}
+                        onSwitchColors={() => handleSwitchColors(idx)}
+                      />
+                    </td>
+                  </tr>
+                )}
+                </>
               );
             })}
           </tbody>
