@@ -1,6 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
-use opencv::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,6 +23,10 @@ pub struct RunContext {
     pub fps: f64,
     #[serde(default)]
     pub duration_secs: f64,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
     #[serde(default)]
     pub youtube_link: Option<String>,
     #[serde(default)]
@@ -52,6 +55,8 @@ impl RunContext {
             total_frames: 0,
             fps: 30.0,
             duration_secs: 0.0,
+            width: 0,
+            height: 0,
             youtube_link: None,
             fuegostats_link: None,
             output_dir,
@@ -114,7 +119,7 @@ impl RunContext {
 
         crate::video::calibration::extract_calibration_frames(
             final_path.to_str().unwrap(),
-            "opencv", // Default backend
+            "ffmpeg", // Use ffmpeg backend
             &output_dir,
             400.0, // Start extraction at 400s
             5,     // Extract 5 frames
@@ -262,7 +267,7 @@ impl RunContext {
     }
 }
 
-/// Lists all MP4 video files within the specified root directory, returning paths relative to video_root.
+/// Lists all video files (MP4, WebM) within the specified root directory, returning paths relative to video_root.
 pub fn list_videos(video_root: &Path) -> Vec<PathBuf> {
     WalkDir::new(video_root)
         .into_iter()
@@ -272,7 +277,10 @@ pub fn list_videos(video_root: &Path) -> Vec<PathBuf> {
             e.path()
                 .extension()
                 .and_then(|s| s.to_str())
-                .map(|s| s.to_lowercase() == "mp4")
+                .map(|s| {
+                    let lower = s.to_lowercase();
+                    lower == "mp4" || lower == "webm"
+                })
                 .unwrap_or(false)
         })
         .filter_map(|e| {
@@ -282,6 +290,65 @@ pub fn list_videos(video_root: &Path) -> Vec<PathBuf> {
                 .map(|p| p.to_path_buf())
         })
         .collect()
+}
+
+/// Video metadata extracted from a file using ffmpeg-next.
+pub(crate) struct VideoMetadata {
+    pub total_frames: usize,
+    pub fps: f64,
+    pub duration_secs: f64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Probe video file for metadata using ffmpeg-next.
+pub(crate) fn probe_video_metadata_ffmpeg(path: &str) -> Result<VideoMetadata> {
+    crate::video::ffmpeg_reader::init_ffmpeg()?;
+
+    let source = Path::new(path);
+    let input_ctx = ffmpeg_next::format::input(source)
+        .context("ffmpeg: failed to open video for metadata probe")?;
+
+    let video_stream = input_ctx
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .ok_or_else(|| anyhow::anyhow!("ffmpeg: no video stream found in {}", path))?;
+
+    let rational_fps = video_stream.avg_frame_rate();
+    let fps = if rational_fps.denominator() > 0 {
+        rational_fps.numerator() as f64 / rational_fps.denominator() as f64
+    } else {
+        0.0
+    };
+
+    let stream_frames = video_stream.frames() as usize;
+    let duration_secs = input_ctx.duration() as f64 / ffmpeg_next::ffi::AV_TIME_BASE as f64;
+
+    let total_frames = if stream_frames > 0 {
+        stream_frames
+    } else if fps > 0.0 {
+        (duration_secs * fps).round() as usize
+    } else {
+        0
+    };
+
+    // Get width and height from decoder parameters
+    let decoder_ctx = ffmpeg_next::codec::context::Context::from_parameters(
+        video_stream.parameters(),
+    )
+    .context("ffmpeg: failed to create decoder context for metadata")?;
+    let decoder = decoder_ctx
+        .decoder()
+        .video()
+        .context("ffmpeg: failed to open video decoder for metadata")?;
+
+    Ok(VideoMetadata {
+        total_frames,
+        fps,
+        duration_secs,
+        width: decoder.width(),
+        height: decoder.height(),
+    })
 }
 
 /// Initializes a new analysis run for the given video file.
@@ -306,30 +373,19 @@ pub fn create_run(output_root: &Path, video_root: &Path, video_name: &str) -> Re
     let absolute_path = std::fs::canonicalize(&full_path).unwrap_or(full_path);
     let absolute_path_str = absolute_path.to_string_lossy();
 
-    // Extract metadata from video
-    let mut total_frames = 0;
-    let mut fps = 0.0;
-    let mut duration_secs = 0.0;
+    let mut run_context = RunContext::new(&absolute_path_str, stem, output_dir);
 
-    // We use a temporary capture to extract metadata
-    let capture = opencv::videoio::VideoCapture::from_file(
-        &absolute_path_str,
-        opencv::videoio::CAP_AVFOUNDATION,
-    )?;
-    if capture.is_opened()? {
-        total_frames = capture.get(opencv::videoio::CAP_PROP_FRAME_COUNT)? as usize;
-        fps = capture.get(opencv::videoio::CAP_PROP_FPS)?;
-        // Also get duration from some source if possible, but CAP_PROP_FRAME_COUNT / FPS is a start.
-        // Actually CAP_AVFOUNDATION might not give direct duration property.
-        if fps > 0.0 {
-            duration_secs = total_frames as f64 / fps;
-        }
+    // Extract metadata from video using ffmpeg-next
+    if let Ok(meta) = probe_video_metadata_ffmpeg(&absolute_path_str) {
+        run_context.total_frames = meta.total_frames;
+        run_context.fps = meta.fps;
+        run_context.duration_secs = meta.duration_secs;
+        run_context.width = meta.width;
+        run_context.height = meta.height;
+    } else {
+        tracing::warn!("Failed to probe video metadata via ffmpeg for: {}", absolute_path_str);
     }
 
-    let mut run_context = RunContext::new(&absolute_path_str, stem, output_dir);
-    run_context.total_frames = total_frames;
-    run_context.fps = fps;
-    run_context.duration_secs = duration_secs;
     run_context.save()?;
 
     Ok(run_context)

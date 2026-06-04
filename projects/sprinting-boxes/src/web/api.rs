@@ -5,7 +5,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use opencv::prelude::*;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -466,30 +465,24 @@ pub async fn backfill_metadata_handler(
     let absolute_path = std::fs::canonicalize(&full_path).unwrap_or(full_path);
     let absolute_path_str = absolute_path.to_string_lossy();
 
-    // Extract metadata from video
-    let capture = opencv::videoio::VideoCapture::from_file(
-        &absolute_path_str,
-        opencv::videoio::CAP_AVFOUNDATION,
-    )
-    .map_err(|e| {
-        tracing::error!("Failed to open video for backfill: {}", e);
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    if capture.is_opened().unwrap_or(false) {
-        let total_frames = capture
-            .get(opencv::videoio::CAP_PROP_FRAME_COUNT)
-            .unwrap_or(0.0) as usize;
-        let fps = capture.get(opencv::videoio::CAP_PROP_FPS).unwrap_or(0.0);
-
-        if total_frames > 0 && fps > 0.0 {
-            run_context.total_frames = total_frames;
-            run_context.fps = fps;
-            run_context.save().map_err(|e| {
-                tracing::error!("Failed to save run context after backfill: {}", e);
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            return Ok(Json(run_context));
+    // Extract metadata from video using ffmpeg-next
+    match crate::run_context::probe_video_metadata_ffmpeg(&absolute_path_str) {
+        Ok(meta) => {
+            if meta.total_frames > 0 && meta.fps > 0.0 {
+                run_context.total_frames = meta.total_frames;
+                run_context.fps = meta.fps;
+                run_context.duration_secs = meta.duration_secs;
+                run_context.width = meta.width;
+                run_context.height = meta.height;
+                run_context.save().map_err(|e| {
+                    tracing::error!("Failed to save run context after backfill: {}", e);
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+                return Ok(Json(run_context));
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to probe video metadata for backfill: {}", e);
         }
     }
 

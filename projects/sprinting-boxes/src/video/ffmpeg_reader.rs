@@ -13,10 +13,15 @@ use ffmpeg_next::packet::Ref as PacketRef;
 static FFMPEG_INIT: Once = Once::new();
 
 /// Ensure FFmpeg is initialized (safe to call multiple times).
-fn init_ffmpeg() -> Result<()> {
+pub(crate) fn init_ffmpeg() -> Result<()> {
     let mut result = Ok(());
     FFMPEG_INIT.call_once(|| match ffmpeg_next::init() {
-        Ok(_) => {}
+        Ok(_) => {
+            // Suppress FFmpeg's verbose swscaler warnings about missing accelerated colorspace conversions
+            unsafe {
+                ffi::av_log_set_level(ffi::AV_LOG_ERROR);
+            }
+        }
         Err(e) => {
             result = Err(anyhow::anyhow!("Failed to initialize FFmpeg: {}", e));
         }
@@ -74,10 +79,25 @@ impl Drop for HwDeviceCtx {
 // FfmpegReader
 // ---------------------------------------------------------------------------
 
+/// Threshold for average keyframe spacing: if keyframes are spaced further apart
+/// than this, fall back to sampled reading mode.
+const KEYFRAME_SPACING_THRESHOLD_SECS: f64 = 1.5;
+
+/// How FfmpegReader decodes frames.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ReadingMode {
+    /// Keyframe-only: AVDISCARD_NONKEY is set, keyframe_pts is populated.
+    /// frame_count() == total_keyframes.
+    KeyframeOnly,
+    /// Sampled: all frames decoded, only frames at multiples of (1/sample_rate) seconds returned.
+    /// frame_count() == floor(duration_secs * sample_rate).
+    Sampled,
+}
+
 /// Video reader backed by FFmpeg via ffmpeg-next.
-/// Always decodes keyframes (I-frames) only for maximum throughput.
 /// Attempts GPU-accelerated decoding via VideoToolbox on macOS;
 /// falls back to CPU decoding transparently.
+/// Reads either keyframe-only (dense keyframes) or sampled (sparse keyframes).
 pub struct FfmpegReader {
     input_ctx: ffmpeg_next::format::context::Input,
     decoder: ffmpeg_next::codec::decoder::Video,
@@ -106,6 +126,10 @@ pub struct FfmpegReader {
     reuse_packet: ffmpeg_next::codec::packet::Packet,
     /// Whether we've sent EOF to the decoder.
     eof_sent: bool,
+    /// Reading mode determined at construction time.
+    reading_mode: ReadingMode,
+    /// Desired output sample rate (frames per second). Only meaningful in Sampled mode.
+    sample_rate: f64,
 }
 
 // SAFETY: Each FfmpegReader instance is owned and used exclusively by a single thread.
@@ -114,7 +138,7 @@ pub struct FfmpegReader {
 unsafe impl Send for FfmpegReader {}
 
 impl FfmpegReader {
-    pub fn new(path: &str, _sample_rate: f64) -> Result<Self> {
+    pub fn new(path: &str, sample_rate: f64) -> Result<Self> {
         init_ffmpeg()?;
 
         let source = Path::new(path);
@@ -174,8 +198,8 @@ impl FfmpegReader {
         // --- Try hardware acceleration ---
         let (hw_device_ctx, hw_pix_fmt, _using_hw) = Self::try_setup_hw_accel(&mut decoder_ctx);
 
-        // --- Set decoder to skip all non-keyframe frames ---
-        // This is the primary optimization: the decoder never parses P/B frames.
+        // --- Set decoder to skip all non-keyframe frames (tentatively) ---
+        // This will be overridden to AVDISCARD_NONE if sampled mode is needed.
         unsafe {
             (*decoder_ctx.as_mut_ptr()).skip_frame = ffi::AVDiscard::AVDISCARD_NONKEY;
         }
@@ -187,20 +211,6 @@ impl FfmpegReader {
 
         let width = decoder.width();
         let height = decoder.height();
-
-        if _using_hw {
-            tracing::info!(
-                "FfmpegReader: using VideoToolbox hardware decoding ({}x{}), keyframe-only mode",
-                width,
-                height
-            );
-        } else {
-            tracing::info!(
-                "FfmpegReader: using CPU software decoding ({}x{}), keyframe-only mode",
-                width,
-                height
-            );
-        }
 
         let mut reader = Self {
             input_ctx,
@@ -220,11 +230,42 @@ impl FfmpegReader {
             _using_hw,
             reuse_packet: ffmpeg_next::codec::packet::Packet::empty(),
             eof_sent: false,
+            reading_mode: ReadingMode::KeyframeOnly, // temporary, will be set below
+            sample_rate,
         };
 
         // Pre-scan all keyframe timestamps (reads packet headers only — no decoding).
-        // This is fast and gives us exact seek targets for random access.
-        reader.scan_keyframes()?;
+        // This also determines whether to use keyframe-only or sampled mode.
+        let reading_mode = reader.scan_keyframes()?;
+        reader.reading_mode = reading_mode;
+
+        // If sampled mode, override the decoder's skip_frame setting to AVDISCARD_NONE.
+        if reading_mode == ReadingMode::Sampled {
+            unsafe {
+                (*reader.decoder.as_mut_ptr()).skip_frame = ffi::AVDiscard::AVDISCARD_NONE;
+            }
+        }
+
+        let mode_label = match reading_mode {
+            ReadingMode::KeyframeOnly => "keyframe-only",
+            ReadingMode::Sampled => "sampled",
+        };
+
+        if _using_hw {
+            tracing::info!(
+                "FfmpegReader: using VideoToolbox hardware decoding ({}x{}), {} mode",
+                width,
+                height,
+                mode_label
+            );
+        } else {
+            tracing::info!(
+                "FfmpegReader: using CPU software decoding ({}x{}), {} mode",
+                width,
+                height,
+                mode_label
+            );
+        }
 
         Ok(reader)
     }
@@ -234,7 +275,8 @@ impl FfmpegReader {
     /// MP4 (and most seekable containers) populate `AVStream.index_entries` from the
     /// moov box during `avformat_open_input` — no bytes of video payload are read.
     /// Falls back to a duration-based estimate if the index is absent (live streams, etc.).
-    fn scan_keyframes(&mut self) -> Result<()> {
+    /// Returns the reading mode to use based on keyframe density.
+    fn scan_keyframes(&mut self) -> Result<ReadingMode> {
         let stream = self
             .input_ctx
             .stream(self.video_stream_index)
@@ -246,7 +288,7 @@ impl FfmpegReader {
 
         let n = unsafe { ffi::avformat_index_get_entries_count(stream_ptr) };
 
-        if n > 0 {
+        let mode = if n > 0 {
             for i in 0..n {
                 let entry = unsafe { ffi::avformat_index_get_entry(stream_ptr, i) };
                 if entry.is_null() {
@@ -263,18 +305,40 @@ impl FfmpegReader {
                 self.total_keyframes,
                 n,
             );
+
+            // Decide mode based on average keyframe spacing
+            if self.total_keyframes > 0 {
+                let avg_spacing = self.duration_secs / self.total_keyframes as f64;
+                if avg_spacing > KEYFRAME_SPACING_THRESHOLD_SECS {
+                    tracing::info!(
+                        "FfmpegReader: keyframes spaced {:.2}s apart (>{:.2}s threshold), using sampled mode",
+                        avg_spacing,
+                        KEYFRAME_SPACING_THRESHOLD_SECS
+                    );
+                    ReadingMode::Sampled
+                } else {
+                    tracing::info!(
+                        "FfmpegReader: keyframes spaced {:.2}s apart, using keyframe-only mode",
+                        avg_spacing
+                    );
+                    ReadingMode::KeyframeOnly
+                }
+            } else {
+                ReadingMode::KeyframeOnly
+            }
         } else {
-            // No index (e.g. raw stream). Estimate 1 keyframe/second.
+            // No index (e.g. raw stream). Estimate 1 keyframe/second and use sampled mode.
             self.total_keyframes = self.duration_secs.ceil() as usize;
             tracing::warn!(
-                "FfmpegReader: no container index found; estimating {} keyframes from duration",
+                "FfmpegReader: no container index found; using sampled mode with estimated {} keyframes from duration",
                 self.total_keyframes
             );
-        }
+            ReadingMode::Sampled
+        };
 
         // Drop the Stream borrow before we need to use input_ctx again.
         let _ = stream;
-        Ok(())
+        Ok(mode)
     }
 
     /// Try to configure VideoToolbox hardware acceleration on the decoder context.
@@ -389,28 +453,32 @@ impl FfmpegReader {
                 Err(e) => return Err(anyhow!("Decoder error: {}", e)),
             }
 
-            // 2. Feed keyframe packets until we find one OR reach EOF
+            // 2. Feed packets until we find one to send OR reach EOF
             if !self.eof_sent {
                 let mut found_packet = false;
                 while self.reuse_packet.read(&mut self.input_ctx).is_ok() {
                     if self.reuse_packet.stream() == self.video_stream_index {
-                        // Skip non-keyframe packets — only I-frames are sent to the decoder
+                        // Determine whether to skip this packet based on reading mode
                         let is_key = unsafe {
                             ((*self.reuse_packet.as_ptr()).flags & ffi::AV_PKT_FLAG_KEY) != 0
                         };
-                        if !is_key {
+                        let should_skip = match self.reading_mode {
+                            ReadingMode::KeyframeOnly => !is_key,
+                            ReadingMode::Sampled => false, // decode all frames in sampled mode
+                        };
+
+                        if should_skip {
                             // CRITICAL: Unref packet buffer before continuing to avoid av_malloc leak
-                            // Each read() allocates a buffer; skipped packets must be freed
                             unsafe {
                                 ffi::av_packet_unref(self.reuse_packet.as_ptr() as *mut _);
                             }
                             continue;
                         }
+
                         self.decoder
                             .send_packet(&self.reuse_packet)
                             .context("Failed to send packet to decoder")?;
-                        // Unref the packet after sending — avcodec_send_packet makes its own copy,
-                        // so the caller must still unref to avoid av_malloc leak
+                        // Unref the packet after sending — avcodec_send_packet makes its own copy
                         unsafe {
                             ffi::av_packet_unref(self.reuse_packet.as_ptr() as *mut _);
                         }
@@ -418,7 +486,6 @@ impl FfmpegReader {
                         break;
                     } else {
                         // Non-video stream packet (audio, subtitles, etc.) — must unref to avoid leak
-                        // Each read() allocates a buffer; unused packets must be freed
                         unsafe {
                             ffi::av_packet_unref(self.reuse_packet.as_ptr() as *mut _);
                         }
@@ -540,7 +607,13 @@ impl VideoReader for FfmpegReader {
     /// Returns the total number of keyframes in the video.
     /// Exact when the container index was available; estimated otherwise.
     fn frame_count(&self) -> Result<usize> {
-        Ok(self.total_keyframes.max(1))
+        match self.reading_mode {
+            ReadingMode::KeyframeOnly => Ok(self.total_keyframes.max(1)),
+            ReadingMode::Sampled => {
+                let count = (self.duration_secs * self.sample_rate).floor() as usize;
+                Ok(count.max(1))
+            }
+        }
     }
 
     fn source_fps(&self) -> Result<f64> {
@@ -551,15 +624,23 @@ impl VideoReader for FfmpegReader {
     /// Uses the exact PTS from the container index when available; falls back to 1-sec/keyframe
     /// time estimation when the index was absent.
     fn seek_to_frame(&mut self, frame_num: usize) -> Result<()> {
-        let time_secs = if let Some(&pts) = self.keyframe_pts.get(frame_num) {
-            pts as f64 * self.stream_time_base
-        } else if !self.keyframe_pts.is_empty() {
-            // Beyond known keyframes — clamp to last known
-            let last = *self.keyframe_pts.last().unwrap();
-            last as f64 * self.stream_time_base
-        } else {
-            // No index: assume 1 keyframe/second
-            frame_num as f64
+        let time_secs = match self.reading_mode {
+            ReadingMode::KeyframeOnly => {
+                if let Some(&pts) = self.keyframe_pts.get(frame_num) {
+                    pts as f64 * self.stream_time_base
+                } else if !self.keyframe_pts.is_empty() {
+                    // Beyond known keyframes — clamp to last known
+                    let last = *self.keyframe_pts.last().unwrap();
+                    last as f64 * self.stream_time_base
+                } else {
+                    // No index: assume 1 keyframe/second
+                    frame_num as f64
+                }
+            }
+            ReadingMode::Sampled => {
+                // In sampled mode, frame_num is a sample index, not a keyframe index
+                frame_num as f64 / self.sample_rate
+            }
         };
         self.seek_to_time(time_secs)?;
         self.frames_decoded = frame_num;
@@ -571,18 +652,33 @@ impl VideoReader for FfmpegReader {
     /// Since I-frames have no temporal dependencies, any keyframe can be sought to directly
     /// via its exact PTS from the container index. Sequential access skips the seek.
     fn read_unit(&mut self, unit_id: usize) -> Result<core::Mat> {
-        if unit_id != self.frames_decoded {
-            self.seek_to_frame(unit_id)?;
-            // seek_to_frame sets frames_decoded = unit_id
+        match self.reading_mode {
+            ReadingMode::KeyframeOnly => {
+                if unit_id != self.frames_decoded {
+                    self.seek_to_frame(unit_id)?;
+                }
+                self.read_frame()
+            }
+            ReadingMode::Sampled => {
+                let target_secs = unit_id as f64 / self.sample_rate;
+                if unit_id != self.frames_decoded {
+                    self.seek_to_time(target_secs)?;
+                    self.frames_decoded = unit_id;
+                }
+                self.read_frame_at_time(target_secs)
+            }
         }
-        self.read_frame()
     }
 
     fn read_frame(&mut self) -> Result<core::Mat> {
         let raw_frame = self.receive_next_raw_owned()?;
         let processed_frame = self.process_decoded_frame(raw_frame)?;
         let bgr_mat = bgr_frame_to_mat(&processed_frame)?;
-        self.frames_decoded += 1;
+        // In keyframe-only mode, frames_decoded is a keyframe counter. Increment after each read.
+        // In sampled mode, frames_decoded is set to unit_id before reading, so don't increment here.
+        if self.reading_mode == ReadingMode::KeyframeOnly {
+            self.frames_decoded += 1;
+        }
         Ok(bgr_mat)
     }
 }
@@ -597,5 +693,36 @@ impl FfmpegReader {
         self.eof_sent = false;
         self.scaler = None;
         Ok(())
+    }
+
+    /// Decode and return the frame at the target time (in seconds).
+    /// Used in sampled mode to find frames at exact sample times.
+    fn read_frame_at_time(&mut self, target_secs: f64) -> Result<core::Mat> {
+        let target_pts = target_secs / self.stream_time_base;
+        let mut frames_tried = 0;
+        const MAX_FRAMES_BEFORE_GIVE_UP: usize = 1000;
+
+        loop {
+            let raw_frame = self.receive_next_raw_owned()?;
+            let frame_pts = unsafe { (*raw_frame.as_ptr()).pts };
+
+            // Accept frame if PTS is at or past target, or if PTS is unavailable (AV_NOPTS_VALUE)
+            let accept_frame = frame_pts == ffi::AV_NOPTS_VALUE || frame_pts >= target_pts as i64;
+            if accept_frame {
+                let processed_frame = self.process_decoded_frame(raw_frame)?;
+                let bgr_mat = bgr_frame_to_mat(&processed_frame)?;
+                // Don't increment frames_decoded here — it's already set to unit_id by read_unit()
+                return Ok(bgr_mat);
+            }
+
+            frames_tried += 1;
+            if frames_tried >= MAX_FRAMES_BEFORE_GIVE_UP {
+                return Err(anyhow!(
+                    "Failed to find frame at {}s after {} decoded frames",
+                    target_secs,
+                    frames_tried
+                ));
+            }
+        }
     }
 }

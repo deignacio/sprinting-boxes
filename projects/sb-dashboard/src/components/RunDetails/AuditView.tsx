@@ -8,11 +8,10 @@ import CliffContextPanel from "./CliffContextPanel";
 
 interface AuditViewProps {
   runId: string;
-  onCliffClick: (cliff: CliffData) => void;
   onViewClick?: (frameIndex: number) => void;
 }
 
-export default function AuditView({ runId, onCliffClick: _onCliffClick, onViewClick }: AuditViewProps) {
+export default function AuditView({ runId, onViewClick }: AuditViewProps) {
   const [cliffs, setCliffs] = useState<CliffData[]>([]);
   const [settings, setSettings] = useState<AuditSettings>({
     light_team_name: "Light",
