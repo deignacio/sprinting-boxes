@@ -328,7 +328,7 @@ pub struct StartProcessingRequest {
 }
 
 fn default_backend() -> String {
-    "opencv".to_string()
+    "ffmpeg".to_string()
 }
 
 pub async fn update_worker_count_handler(
@@ -351,7 +351,7 @@ pub async fn start_processing_handler(
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     let (backend, fast) = match body {
         Some(Json(b)) => (b.backend, b.fast),
-        None => ("opencv".to_string(), false),
+        None => ("ffmpeg".to_string(), false),
     };
 
     let output_root = std::path::Path::new(&args.output_root);
