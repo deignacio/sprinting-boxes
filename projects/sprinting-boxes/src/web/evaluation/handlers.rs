@@ -615,6 +615,7 @@ pub async fn global_sweep_handler(
         min_gap: state.detector_config.min_gap,
         smoothing_window: state.detector_config.smoothing_window,
         field_onset: state.detector_config.field_onset,
+        video_start_prepoint_threshold: state.detector_config.video_start_prepoint_threshold,
     };
 
     if !param_lists.contains_key("min_drop") {
@@ -726,6 +727,7 @@ pub async fn global_sweep_handler(
                 min_gap: combo.get("min_gap").and_then(|v| v.as_u64()).unwrap_or(default_params.min_gap as u64) as usize,
                 smoothing_window: combo.get("smoothing_window").and_then(|v| v.as_u64()).unwrap_or(default_params.smoothing_window as u64) as usize,
                 field_onset: combo.get("field_onset").and_then(|v| v.as_f64()).unwrap_or(default_params.field_onset as f64) as f32,
+                video_start_prepoint_threshold: combo.get("video_start_prepoint_threshold").and_then(|v| v.as_f64()).unwrap_or(default_params.video_start_prepoint_threshold as f64) as f32,
             };
 
             let mut total_tp = 0;
@@ -821,5 +823,6 @@ pub async fn get_detector_config_handler(
         min_gap: state.detector_config.min_gap,
         smoothing_window: state.detector_config.smoothing_window,
         field_onset: state.detector_config.field_onset,
+        video_start_prepoint_threshold: state.detector_config.video_start_prepoint_threshold,
     })
 }

@@ -17,6 +17,7 @@ pub struct MetalDetectorParams {
     pub absolute_threshold: f32,
     pub min_gap: f32,
     pub smoothing_window: f32,
+    pub video_start_prepoint_threshold: f32,
 }
 
 impl From<&CliffDetectorConfig> for MetalDetectorParams {
@@ -29,6 +30,7 @@ impl From<&CliffDetectorConfig> for MetalDetectorParams {
             absolute_threshold: cfg.absolute_threshold,
             min_gap: cfg.min_gap as f32,
             smoothing_window: cfg.smoothing_window as f32,
+            video_start_prepoint_threshold: cfg.video_start_prepoint_threshold,
         }
     }
 }

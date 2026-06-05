@@ -10,6 +10,7 @@ struct DetectorParams {
     float absolute_threshold;
     float min_gap;
     float smoothing_window;
+    float video_start_prepoint_threshold;
 };
 
 // Compute median of a small sorted array (up to 30 elements)
@@ -62,12 +63,8 @@ kernel void detect_cliffs(
     uint min_post = (uint)cfg.min_post_duration;
     uint window = (uint)cfg.smoothing_window;
 
-    // Bounds check
-    if (len < min_pre + min_post) {
-        detected[i] = 0;
-        return;
-    }
-    if (i < min_pre || i + min_post >= len) {
+    // Bounds check - only require enough post-context for early points
+    if (i + min_post >= len) {
         detected[i] = 0;
         return;
     }
@@ -92,24 +89,41 @@ kernel void detect_cliffs(
         return;
     }
 
-    // Check pre-point plateau (median of pre window >= 0.5)
+    // Check pre-point plateau with support for very early points
     uint start_pre = (i >= min_pre) ? (i - min_pre) : 0;
     uint pre_len = i - start_pre;
-    if (pre_len < min_pre) {
-        detected[i] = 0;
-        return;
+
+    float median_pre = 0.0;
+    bool pre_check_passed = false;
+
+    if (pre_len >= min_pre) {
+        // Normal case: enough prepoint frames, use strict 0.5 threshold
+        float pre_values[30];
+        for (uint j = 0; j < pre_len && j < 30; j++) {
+            pre_values[j] = compute_smoothed_at(scores, len, start_pre + j, window);
+        }
+        sort_small_array(pre_values, pre_len);
+        median_pre = pre_values[pre_len / 2];
+        if (median_pre >= 0.5) {
+            pre_check_passed = true;
+        }
+    } else if (pre_len > 0) {
+        // Early point case: fewer prepoint frames, use video_start_prepoint_threshold
+        float pre_values[30];
+        for (uint j = 0; j < pre_len && j < 30; j++) {
+            pre_values[j] = compute_smoothed_at(scores, len, start_pre + j, window);
+        }
+        sort_small_array(pre_values, pre_len);
+        median_pre = pre_values[pre_len / 2];
+        if (median_pre >= cfg.video_start_prepoint_threshold) {
+            pre_check_passed = true;
+        }
+    } else {
+        // No prepoint frames (cliff at frame 0) - allow if drop is strong
+        pre_check_passed = true;
     }
 
-    // Compute median of pre-window (load into local memory, sort, find median)
-    // Use smoothed scores for pre-window (like Python does)
-    float pre_values[30];
-    for (uint j = 0; j < pre_len && j < 30; j++) {
-        pre_values[j] = compute_smoothed_at(scores, len, start_pre + j, window);
-    }
-    sort_small_array(pre_values, pre_len);
-    float median_pre = pre_values[pre_len / 2];
-
-    if (median_pre < 0.5) {
+    if (!pre_check_passed) {
         detected[i] = 0;
         return;
     }

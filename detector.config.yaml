@@ -36,3 +36,9 @@ smoothing_window: 3
 # Controls how much occupancy in the field affects the score
 # field_term = clamp(field_onset - field_count, 0, 1)
 field_onset: 1.5
+
+# Score threshold for detecting "video starts in pre-point state"
+# If video begins with median score >= this value, allow earlier cliff detection
+# with shorter prepoint window (even if < min_prepoint_duration)
+# Enables detection of very early points where setup phase is cut off
+video_start_prepoint_threshold: 0.5

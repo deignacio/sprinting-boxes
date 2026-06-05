@@ -46,6 +46,7 @@ pub struct CliffDetectorConfig {
     pub absolute_threshold: f32,
     pub min_gap: usize,
     pub smoothing_window: usize,
+    pub video_start_prepoint_threshold: f32,
 }
 
 impl Default for CliffDetectorConfig {
@@ -58,6 +59,7 @@ impl Default for CliffDetectorConfig {
             absolute_threshold: 0.5,
             min_gap: 20,
             smoothing_window: 3,
+            video_start_prepoint_threshold: 0.5,
         }
     }
 }
@@ -73,6 +75,16 @@ impl CliffDetector {
         Self { config }
     }
 
+    /// Compute median of a slice by sorting and taking the middle element.
+    fn median(values: &[f32]) -> f32 {
+        if values.is_empty() {
+            return 0.0;
+        }
+        let mut sorted = values.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted[sorted.len() / 2]
+    }
+
     /// Check if a cliff (point-start transition) occurs at the given index.
     ///
     /// A cliff is detected when:
@@ -81,13 +93,8 @@ impl CliffDetector {
     /// 3. Post-point stability: median score <= max_post_proba for min_post_duration frames
     /// 4. Absolute threshold: next frame score <= absolute_threshold
     pub fn is_cliff_at(&self, probabilities: &[f32], center_idx: usize) -> bool {
-        if probabilities.len() < self.config.min_prepoint_duration + self.config.min_post_duration {
-            return false;
-        }
-
-        if center_idx < self.config.min_prepoint_duration
-            || center_idx + self.config.min_post_duration >= probabilities.len()
-        {
+        // Only require enough post-context; allow early points with partial prepoint context
+        if center_idx + self.config.min_post_duration >= probabilities.len() {
             return false;
         }
 
@@ -126,35 +133,34 @@ impl CliffDetector {
             return false;
         }
 
-        // Pre-point plateau check
+        // Pre-point plateau check with support for very early points
+        // (GPU implementation mirrors this logic in metal_detect.metal lines 92-130)
         let start_pre = i.saturating_sub(self.config.min_prepoint_duration);
         let pre_window = &smoothed[start_pre..i];
-        if pre_window.len() < self.config.min_prepoint_duration {
-            return false;
-        }
 
-        let mut sorted_pre = pre_window.to_vec();
-        sorted_pre.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let median_pre = sorted_pre[sorted_pre.len() / 2];
-        if median_pre < 0.5 {
-            return false;
+        if !pre_window.is_empty() {
+            let median_pre = Self::median(pre_window);
+            let threshold = if pre_window.len() >= self.config.min_prepoint_duration {
+                0.5
+            } else {
+                self.config.video_start_prepoint_threshold
+            };
+            if median_pre < threshold {
+                return false;
+            }
         }
 
         // Post-point stability check
         let post_start = i + 1;
         let post_end = (post_start + self.config.min_post_duration).min(probabilities.len());
-        let post_window_raw = &probabilities[post_start..post_end];
+        let post_window = &probabilities[post_start..post_end];
 
-        if !post_window_raw.is_empty() {
-            let mut sorted_post = post_window_raw.to_vec();
-            sorted_post.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let median_post = sorted_post[sorted_post.len() / 2];
-            if median_post > self.config.max_post_proba {
-                return false;
-            }
+        if post_window.len() < self.config.min_post_duration {
+            return false;
         }
 
-        if post_window_raw.len() < self.config.min_post_duration {
+        let median_post = Self::median(post_window);
+        if median_post > self.config.max_post_proba {
             return false;
         }
 

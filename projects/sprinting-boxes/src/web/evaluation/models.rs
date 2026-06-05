@@ -85,6 +85,7 @@ pub struct DetectorConfigParams {
     pub min_gap: usize,
     pub smoothing_window: usize,
     pub field_onset: f32,
+    pub video_start_prepoint_threshold: f32,
 }
 
 impl Default for DetectorConfigParams {
@@ -98,6 +99,7 @@ impl Default for DetectorConfigParams {
             min_gap: 20,
             smoothing_window: 3,
             field_onset: 1.5,
+            video_start_prepoint_threshold: 0.5,
         }
     }
 }

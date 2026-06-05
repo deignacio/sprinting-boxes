@@ -16,6 +16,12 @@ pub struct DetectorConfig {
     pub min_gap: usize,
     pub smoothing_window: usize,
     pub field_onset: f32,
+    #[serde(default = "default_video_start_prepoint_threshold")]
+    pub video_start_prepoint_threshold: f32,
+}
+
+fn default_video_start_prepoint_threshold() -> f32 {
+    0.5
 }
 
 impl Default for DetectorConfig {
@@ -29,6 +35,7 @@ impl Default for DetectorConfig {
             min_gap: 20,
             smoothing_window: 3,
             field_onset: 1.5,
+            video_start_prepoint_threshold: 0.5,
         }
     }
 }
@@ -72,6 +79,7 @@ impl From<DetectorConfig> for CliffDetectorConfig {
             absolute_threshold: config.absolute_threshold,
             min_gap: config.min_gap,
             smoothing_window: config.smoothing_window,
+            video_start_prepoint_threshold: config.video_start_prepoint_threshold,
         }
     }
 }
@@ -86,6 +94,7 @@ impl From<&DetectorConfigParams> for CliffDetectorConfig {
             absolute_threshold: config.absolute_threshold,
             min_gap: config.min_gap,
             smoothing_window: config.smoothing_window,
+            video_start_prepoint_threshold: config.video_start_prepoint_threshold,
         }
     }
 }
@@ -101,6 +110,7 @@ impl From<&DetectorConfig> for DetectorConfigParams {
             min_gap: config.min_gap,
             smoothing_window: config.smoothing_window,
             field_onset: config.field_onset,
+            video_start_prepoint_threshold: config.video_start_prepoint_threshold,
         }
     }
 }
