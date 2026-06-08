@@ -122,4 +122,4 @@ cargo run -p sprinting-boxes
 
 See the [LICENSE](LICENSE) file for details.
 
-Credit to Will Chen (@wpchen) for sharing his point-start and pull-side detection algorithms with me and for his early prototype demonstrating the viability of his approach.
+Credit to Will Chen (@wpchen) for sharing his point-start and pull-side detection algorithms with me and for his early prototype demonstrating the viability of his approach. For clarity, the implementations of those algorithms have been refactored into a [separate project within this monorepo](./ultimate-event-detection/README.md).

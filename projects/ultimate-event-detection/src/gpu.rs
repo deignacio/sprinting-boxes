@@ -1,12 +1,9 @@
-//! GPU-accelerated cliff detection using Metal on Apple Silicon.
-
-use crate::scoring::CliffDetectorConfig;
+use crate::cliff::CliffDetectorConfig;
+#[cfg(not(feature = "metal"))]
+use crate::cliff::is_cliff_at;
 use std::ffi::c_void;
 
-#[cfg(not(target_os = "macos"))]
-use crate::scoring::CliffDetector;
-
-/// Detector configuration for Metal compute shader
+/// Detector configuration layout matching the Metal shader's struct.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MetalDetectorParams {
@@ -35,7 +32,7 @@ impl From<&CliffDetectorConfig> for MetalDetectorParams {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(feature = "metal")]
 extern "C" {
     fn gpu_detect_cliffs(
         device: *const c_void,
@@ -55,73 +52,78 @@ extern "C" {
     fn gpu_release_pipeline(pipeline: *mut c_void);
 }
 
-/// GPU-accelerated cliff detector using Metal
-#[cfg(target_os = "macos")]
-pub struct GPUCliffDetector {
+/// GPU-accelerated cliff detector using Metal (macOS only, requires `metal` feature).
+///
+/// Falls back to the pure-Rust `is_cliff_at` on non-macOS or when the `metal` feature
+/// is not enabled.
+pub struct GpuCliffDetector {
+    #[cfg(feature = "metal")]
     device: *mut c_void,
+    #[cfg(feature = "metal")]
     command_queue: *mut c_void,
+    #[cfg(feature = "metal")]
     pipeline: *mut c_void,
+    #[cfg(not(feature = "metal"))]
+    _phantom: std::marker::PhantomData<()>,
 }
 
-#[cfg(target_os = "macos")]
-unsafe impl Send for GPUCliffDetector {}
+#[cfg(feature = "metal")]
+unsafe impl Send for GpuCliffDetector {}
+#[cfg(feature = "metal")]
+unsafe impl Sync for GpuCliffDetector {}
 
-#[cfg(target_os = "macos")]
-unsafe impl Sync for GPUCliffDetector {}
-
-#[cfg(target_os = "macos")]
-impl GPUCliffDetector {
-    /// Create a new GPU cliff detector
+impl GpuCliffDetector {
+    #[cfg(feature = "metal")]
     pub fn new() -> Result<Self, String> {
         unsafe {
-            // Initialize Metal device
             let device = gpu_init();
             if device.is_null() {
                 return Err("Failed to initialize Metal device".to_string());
             }
-
-            // Create command queue
             let command_queue = gpu_get_command_queue(device);
             if command_queue.is_null() {
                 gpu_release_device(device);
                 return Err("Failed to create command queue".to_string());
             }
-
-            // Load and compile shader (embedded at build time)
-            let metallib_data = include_bytes!(concat!(
-                env!("OUT_DIR"),
-                "/metal_detect.metallib"
-            ));
-
+            let metallib_data = include_bytes!(concat!(env!("OUT_DIR"), "/metal_detect.metallib"));
             let pipeline = gpu_get_pipeline(device, metallib_data.as_ptr(), metallib_data.len());
             if pipeline.is_null() {
                 gpu_release_command_queue(command_queue);
                 gpu_release_device(device);
                 return Err("Failed to create compute pipeline".to_string());
             }
-
-            Ok(Self {
-                device,
-                command_queue,
-                pipeline,
-            })
+            Ok(Self { device, command_queue, pipeline })
         }
     }
 
-    /// Detect cliffs in scores using GPU
-    pub fn detect_cliffs_gpu(
-        &self,
-        scores: &[f32],
-        config: &CliffDetectorConfig,
-    ) -> Result<Vec<bool>, String> {
+    #[cfg(not(feature = "metal"))]
+    pub fn new() -> Result<Self, String> {
+        Ok(Self { _phantom: std::marker::PhantomData })
+    }
+
+    /// Detect cliffs in a score sequence.
+    ///
+    /// Uses the Metal GPU shader when the `metal` feature is enabled on macOS,
+    /// otherwise falls back to the pure-Rust batch implementation.
+    pub fn detect_cliffs(&self, scores: &[f32], config: &CliffDetectorConfig) -> Result<Vec<bool>, String> {
+        #[cfg(feature = "metal")]
+        {
+            self.detect_cliffs_gpu(scores, config)
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            Ok((0..scores.len()).map(|i| is_cliff_at(config, scores, i)).collect())
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    fn detect_cliffs_gpu(&self, scores: &[f32], config: &CliffDetectorConfig) -> Result<Vec<bool>, String> {
         if scores.is_empty() {
             return Ok(Vec::new());
         }
-
         let len = scores.len() as u32;
         let mut output = vec![0u32; scores.len()];
         let params = MetalDetectorParams::from(config);
-
         unsafe {
             let result = gpu_detect_cliffs(
                 self.device,
@@ -132,49 +134,21 @@ impl GPUCliffDetector {
                 &params,
                 output.as_mut_ptr(),
             );
-
             if result != 0 {
                 return Err("GPU cliff detection failed".to_string());
             }
         }
-
         Ok(output.iter().map(|&v| v != 0).collect())
     }
 }
 
-#[cfg(target_os = "macos")]
-impl Drop for GPUCliffDetector {
+#[cfg(feature = "metal")]
+impl Drop for GpuCliffDetector {
     fn drop(&mut self) {
         unsafe {
             gpu_release_pipeline(self.pipeline);
             gpu_release_command_queue(self.command_queue);
             gpu_release_device(self.device);
         }
-    }
-}
-
-/// CPU fallback detector for non-macOS platforms
-#[cfg(not(target_os = "macos"))]
-pub struct GPUCliffDetector {
-    _phantom: std::marker::PhantomData<()>,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl GPUCliffDetector {
-    pub fn new() -> Result<Self, String> {
-        Ok(Self {
-            _phantom: std::marker::PhantomData,
-        })
-    }
-
-    pub fn detect_cliffs_gpu(
-        &self,
-        scores: &[f32],
-        config: &CliffDetectorConfig,
-    ) -> Result<Vec<bool>, String> {
-        let detector = CliffDetector::new(config.clone());
-        Ok((0..scores.len())
-            .map(|i| detector.is_cliff_at(scores, i))
-            .collect())
     }
 }

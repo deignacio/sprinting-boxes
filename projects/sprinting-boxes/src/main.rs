@@ -2,7 +2,6 @@ mod cli;
 mod config;
 mod detection;
 mod geometry;
-mod gpu_detector;
 mod pipeline;
 mod run_artifacts;
 mod run_context;

@@ -1,7 +1,7 @@
 use crate::config::DetectorConfig;
-use crate::scoring::{
-    calculate_deltas, calculate_frame_metrics, CliffDetectorConfig, CliffDetectorState,
-    FrameHistory,
+use crate::scoring::{calculate_deltas, calculate_frame_metrics, FrameHistory};
+use ultimate_event_detection::{
+    detect_pull_side, CliffDetector, CliffDetectorConfig, EndZoneOccupancy, PullSide,
 };
 use anyhow::Result;
 use crossbeam::channel::{Receiver, Sender};
@@ -60,7 +60,7 @@ pub fn feature_worker(
     // Load detector config from file (falls back to defaults if file missing)
     let detector_config = DetectorConfig::from_file("detector.config.yaml");
     let cliff_config = CliffDetectorConfig::from(detector_config);
-    let mut cliff_state = CliffDetectorState::new(cliff_config);
+    let mut cliff_state = CliffDetector::new(cliff_config);
 
     for frame in rx {
         let start_inst = Instant::now();
@@ -112,72 +112,23 @@ pub fn feature_worker(
                 // Apply heuristics if cliff
                 if frame.is_cliff {
                     let start_idx = frame.id.saturating_sub(config.lookback_frames);
-                    let end_idx = frame.id + config.lookahead_frames;
+                    let end_idx = (frame.id + config.lookahead_frames).min(history_buffer.len().saturating_sub(1));
 
-                    let mut left_zero_count = 0;
-                    let mut right_zero_count = 0;
-                    let mut left_emptied_at = None;
-                    let mut right_emptied_at = None;
+                    let window: Vec<(usize, EndZoneOccupancy)> = (start_idx..=end_idx)
+                        .map(|i| {
+                            let h = &history_buffer[i];
+                            (i, EndZoneOccupancy { left: h.left_count, right: h.right_count, field: 0.0 })
+                        })
+                        .collect();
 
-                    for i in start_idx..=end_idx {
-                        if i >= history_buffer.len() {
-                            break;
+                    match detect_pull_side(&window, 2) {
+                        PullSide::Left => frame.left_emptied_first = true,
+                        PullSide::Right => frame.right_emptied_first = true,
+                        PullSide::Tie => {
+                            frame.left_emptied_first = true;
+                            frame.right_emptied_first = true;
                         }
-                        let h = &history_buffer[i];
-
-                        if h.left_count == 0.0 {
-                            left_zero_count += 1;
-                            if left_zero_count >= 2 && left_emptied_at.is_none() {
-                                left_emptied_at = Some(i);
-                            }
-                        } else {
-                            left_zero_count = 0;
-                        }
-
-                        if h.right_count == 0.0 {
-                            right_zero_count += 1;
-                            if right_zero_count >= 2 && right_emptied_at.is_none() {
-                                right_emptied_at = Some(i);
-                            }
-                        } else {
-                            right_zero_count = 0;
-                        }
-                    }
-
-                    match (left_emptied_at, right_emptied_at) {
-                        (Some(l), Some(r)) => {
-                            if l < r {
-                                frame.left_emptied_first = true;
-                            } else if r < l {
-                                frame.right_emptied_first = true;
-                            } else {
-                                // Both emptied at the same time: look back for tie-breaker
-                                let mut winner_found = false;
-                                for back_idx in (0..l).rev() {
-                                    if back_idx >= history_buffer.len() {
-                                        break;
-                                    }
-                                    let h = &history_buffer[back_idx];
-                                    if h.left_count < h.right_count {
-                                        frame.left_emptied_first = true;
-                                        winner_found = true;
-                                        break;
-                                    } else if h.right_count < h.left_count {
-                                        frame.right_emptied_first = true;
-                                        winner_found = true;
-                                        break;
-                                    }
-                                }
-                                if !winner_found {
-                                    // True tie if no difference found
-                                    frame.left_emptied_first = true;
-                                    frame.right_emptied_first = true;
-                                }
-                            }
-                        }
-                        (Some(_), None) => frame.left_emptied_first = true,
-                        (None, Some(_)) => frame.right_emptied_first = true,
-                        (None, None) => frame.maybe_false_positive = true,
+                        PullSide::Unknown => frame.maybe_false_positive = true,
                     }
                 }
 

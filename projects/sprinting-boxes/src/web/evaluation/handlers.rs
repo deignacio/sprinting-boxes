@@ -10,9 +10,8 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::gpu_detector::GPUCliffDetector;
+use ultimate_event_detection::{CliffDetector, CliffDetectorConfig, GpuCliffDetector};
 use crate::run_context::list_runs;
-use crate::scoring::{CliffDetectorConfig, CliffDetectorState};
 use crate::web::server::AppState;
 
 use super::models::{AggregatedMetrics, DetectorConfigParams, EvaluationMetrics, FNCause, FPCause, GlobalSweepRequest, GlobalSweepResponse};
@@ -353,7 +352,7 @@ fn evaluate_config_gpu(
     raw_features: &[FrameFeatures],
     ground_truth: &HashSet<usize>,
     config: &DetectorConfigParams,
-    gpu_detector: &Option<Arc<GPUCliffDetector>>,
+    gpu_detector: &Option<Arc<GpuCliffDetector>>,
 ) -> EvaluationMetrics {
     let detector_config = CliffDetectorConfig::from(config);
 
@@ -378,7 +377,7 @@ fn evaluate_config_gpu(
 
     // Use GPU detector if available, otherwise CPU
     let detected = if let Some(gpu) = gpu_detector {
-        match gpu.detect_cliffs_gpu(&scores, &detector_config) {
+        match gpu.detect_cliffs(&scores, &detector_config) {
             Ok(cliff_flags) => {
                 // Apply min_gap constraint using actual frame indices
                 let mut detected = HashSet::new();
@@ -400,7 +399,7 @@ fn evaluate_config_gpu(
             }
             Err(_) => {
                 // GPU failed, fall back to CPU stateful detector
-                let mut detector_state = CliffDetectorState::new(detector_config);
+                let mut detector_state = CliffDetector::new(detector_config);
                 let mut detected = HashSet::new();
 
                 for (frame_idx, score) in &frames {
@@ -412,7 +411,7 @@ fn evaluate_config_gpu(
                     }
                 }
 
-                let results = detector_state.process(true);
+                let results = detector_state.flush();
                 for (idx, is_cliff) in results {
                     if is_cliff {
                         detected.insert(idx);
@@ -423,7 +422,7 @@ fn evaluate_config_gpu(
         }
     } else {
         // No GPU available, use CPU stateful detector
-        let mut detector_state = CliffDetectorState::new(detector_config);
+        let mut detector_state = CliffDetector::new(detector_config);
         let mut detected = HashSet::new();
 
         for (frame_idx, score) in &frames {
@@ -435,7 +434,7 @@ fn evaluate_config_gpu(
             }
         }
 
-        let results = detector_state.process(true);
+        let results = detector_state.flush();
         for (idx, is_cliff) in results {
             if is_cliff {
                 detected.insert(idx);

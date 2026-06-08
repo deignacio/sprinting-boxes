@@ -1,6 +1,6 @@
 use crate::cli::Args;
 use crate::config::DetectorConfig;
-use crate::gpu_detector::GPUCliffDetector;
+use ultimate_event_detection::GpuCliffDetector;
 use crate::web::api::{
     backfill_metadata_handler, compute_crops_handler, create_run_handler,
     extract_calibration_frames_handler, get_calibration_frames_handler, get_crops_handler,
@@ -30,7 +30,7 @@ use tracing::{info, warn};
 #[derive(Clone)]
 pub struct AppState {
     pub args: Arc<Args>,
-    pub gpu_detector: Option<Arc<GPUCliffDetector>>,
+    pub gpu_detector: Option<Arc<GpuCliffDetector>>,
     pub detector_config: Arc<DetectorConfig>,
 }
 
@@ -49,7 +49,7 @@ pub async fn run_server(args: Args) -> Result<()> {
     let detector_config = Arc::new(DetectorConfig::from_file("detector.config.yaml"));
 
     // Initialize GPU detector (optional, falls back to CPU if unavailable)
-    let gpu_detector = match GPUCliffDetector::new() {
+    let gpu_detector = match GpuCliffDetector::new() {
         Ok(detector) => {
             info!("GPU-accelerated cliff detector initialized");
             Some(Arc::new(detector))

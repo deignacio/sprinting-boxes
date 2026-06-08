@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use crate::scoring::CliffDetectorConfig;
+use ultimate_event_detection::CliffDetectorConfig;
 use crate::web::evaluation::models::DetectorConfigParams;
 
 /// Configuration for the cliff detector, loaded from detector.config.yaml
